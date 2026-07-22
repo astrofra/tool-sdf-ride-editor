@@ -255,6 +255,8 @@ Lighting remains manually authored.
 - https://github.com/Microsoft/UVAtlas
 - https://github.com/jpcy/xatlas
 - https://github.com/Thekla/thekla_atlas
+- https://github.com/zeux/meshoptimizer
+- https://github.com/ejulien/fabgen
 
 ---
 
