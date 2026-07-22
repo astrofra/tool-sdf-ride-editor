@@ -77,7 +77,7 @@ def run_git(args: list[str], cwd: Path, *, raw: bool = False) -> str | bytes:
     if result.returncode != 0:
         command = "git " + " ".join(args)
         stderr = decode_output(result.stderr)
-        raise CommandError(f"Echec de `{command}`:\n{stderr}")
+        raise CommandError(f"Command `{command}` failed:\n{stderr}")
     if raw:
         return result.stdout
     return decode_output(result.stdout)
@@ -96,8 +96,8 @@ def run_git_for_display(args: list[str], cwd: Path) -> str:
     if result.returncode != 0:
         command = "git " + " ".join(args)
         if output:
-            raise CommandError(f"Echec de `{command}`:\n{output}")
-        raise CommandError(f"Echec de `{command}`.")
+            raise CommandError(f"Command `{command}` failed:\n{output}")
+        raise CommandError(f"Command `{command}` failed.")
     return output
 
 
@@ -110,8 +110,8 @@ def require_ollama():
         import ollama  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
-            "Le paquet Python `ollama` est introuvable pour l'interpreteur "
-            f"`{sys.executable}`. Installe-le avec: "
+            "The Python package `ollama` is missing for interpreter "
+            f"`{sys.executable}`. Install it with: "
             f"{sys.executable} -m pip install ollama"
         ) from exc
     return ollama
@@ -130,31 +130,43 @@ def parse_name_status(raw_status: bytes) -> list[ChangedFile]:
         index += 1
         if status.startswith(("R", "C")):
             if index + 1 >= len(parts):
-                raise RuntimeError("Sortie `git diff --name-status -z` inattendue.")
+                raise RuntimeError("Unexpected `git diff --name-status -z` output.")
             old_path = decode_path(parts[index])
             new_path = decode_path(parts[index + 1])
             index += 2
             entries.append(ChangedFile(status=status, path=new_path, old_path=old_path))
         else:
             if index >= len(parts):
-                raise RuntimeError("Sortie `git diff --name-status -z` inattendue.")
+                raise RuntimeError("Unexpected `git diff --name-status -z` output.")
             path = decode_path(parts[index])
             index += 1
             entries.append(ChangedFile(status=status, path=path))
     return entries
 
 
-def status_label(status: str) -> str:
+def status_label(status: str, *, language: str = "en") -> str:
     primary = status[0] if status else "?"
-    labels = {
-        "A": "ajout",
-        "M": "modification",
-        "D": "suppression",
-        "R": "renommage",
-        "C": "copie",
-        "T": "changement de type",
-        "U": "conflit",
+    labels_by_language = {
+        "fr": {
+            "A": "ajout",
+            "M": "modification",
+            "D": "suppression",
+            "R": "renommage",
+            "C": "copie",
+            "T": "changement de type",
+            "U": "conflit",
+        },
+        "en": {
+            "A": "addition",
+            "M": "modification",
+            "D": "deletion",
+            "R": "rename",
+            "C": "copy",
+            "T": "type change",
+            "U": "conflict",
+        },
     }
+    labels = labels_by_language.get(language, labels_by_language["fr"])
     if status.startswith(("R", "C")) and len(status) > 1:
         return f"{labels.get(primary, status)} ({status[1:]}%)"
     return labels.get(primary, status)
@@ -166,7 +178,7 @@ def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:
     head = max_chars // 2
     tail = max_chars - head
     omitted = len(text) - max_chars
-    marker = f"\n\n[... diff tronque: {omitted} caracteres omis ...]\n\n"
+    marker = f"\n\n[... diff truncated: {omitted} characters omitted ...]\n\n"
     return text[:head] + marker + text[-tail:], True
 
 
@@ -182,7 +194,7 @@ def recent_git_log(repo: Path, count: int) -> str:
             repo,
         )
     except CommandError:
-        return "(historique git indisponible)"
+        return "(git history unavailable)"
 
 
 def changed_directories(changed_files: list[ChangedFile]) -> list[str]:
@@ -214,7 +226,7 @@ def repository_outline(repo: Path, changed_files: list[ChangedFile]) -> str:
     top = ", ".join(f"{name} ({count})" for name, count in sorted(first_level.items()))
     touched = "\n".join(f"- {path}" for path in changed_dirs[:30])
     if len(changed_dirs) > 30:
-        touched += f"\n- ... {len(changed_dirs) - 30} autres dossiers"
+        touched += f"\n- ... {len(changed_dirs) - 30} more directories"
 
     frequent_second_level = sorted(
         second_level.items(), key=lambda item: item[1], reverse=True
@@ -223,17 +235,17 @@ def repository_outline(repo: Path, changed_files: list[ChangedFile]) -> str:
 
     return textwrap.dedent(
         f"""
-        Racine du depot:
+        Repository root:
         {repo}
 
-        Entrees de premier niveau suivies:
-        {top or "(aucune)"}
+        Tracked top-level entries:
+        {top or "(none)"}
 
-        Principaux sous-dossiers suivis:
-        {second or "(aucun)"}
+        Main tracked subdirectories:
+        {second or "(none)"}
 
-        Dossiers touches par ce commit:
-        {touched or "(racine seulement)"}
+        Directories touched by this commit:
+        {touched or "(repository root only)"}
         """
     ).strip()
 
@@ -318,7 +330,7 @@ def bytes_from_mb(value: float) -> int:
 
 
 def human_size(size_bytes: int) -> str:
-    return f"{size_bytes / (1024 * 1024):.1f} Mo"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 def find_oversized_staged_files(
@@ -412,7 +424,7 @@ def format_oversized_files(oversized_files: list[OversizedFile]) -> str:
         f"- {item.path} ({human_size(item.size_bytes)})" for item in oversized_files[:20]
     ]
     if len(oversized_files) > 20:
-        lines.append(f"- ... {len(oversized_files) - 20} autre(s) fichier(s)")
+        lines.append(f"- ... {len(oversized_files) - 20} more file(s)")
     return "\n".join(lines)
 
 
@@ -447,7 +459,7 @@ def extract_ollama_content(response) -> str:
         if isinstance(content, str):
             return content.strip()
 
-    raise RuntimeError("Reponse Ollama inattendue: impossible d'extraire le texte.")
+    raise RuntimeError("Unexpected Ollama response: unable to extract text.")
 
 
 def ollama_chat(ollama, model: str, messages: list[dict[str, str]]) -> str:
@@ -462,8 +474,8 @@ def ollama_chat(ollama, model: str, messages: list[dict[str, str]]) -> str:
         )
     except Exception as exc:  # Ollama exposes different exception classes by version.
         raise RuntimeError(
-            f"Appel Ollama impossible avec le modele `{model}`. "
-            "Verifie que Ollama tourne et que le modele est installe "
+            f"Unable to call Ollama with model `{model}`. "
+            "Check that Ollama is running and that the model is installed "
             f"(`ollama pull {model}`)."
         ) from exc
     return extract_ollama_content(response)
@@ -484,24 +496,26 @@ def per_file_prompt(
     diff: str,
     truncated: bool,
 ) -> list[dict[str, str]]:
-    old_path = f"\nAncien chemin: {changed_file.old_path}" if changed_file.old_path else ""
+    old_path = (
+        f"\nPrevious path: {changed_file.old_path}" if changed_file.old_path else ""
+    )
     truncation_note = (
-        "\nLe diff a ete tronque au milieu; signale uniquement les changements visibles."
+        "\nThe diff was truncated in the middle; mention only the visible changes."
         if truncated
         else ""
     )
     sections = [
-        format_prompt_section("Historique recent du depot", git_log),
-        format_prompt_section("Structure utile du depot", outline),
+        format_prompt_section("Recent repository history", git_log),
+        format_prompt_section("Useful repository structure", outline),
         textwrap.dedent(
             f"""
-            Fichier: {changed_file.path}{old_path}
-            Statut: {status_label(changed_file.status)} ({changed_file.status})
+            File: {changed_file.path}{old_path}
+            Status: {status_label(changed_file.status, language="en")} ({changed_file.status})
             {truncation_note}
 
-            Diff isole du fichier:
+            Isolated file diff:
             ```diff
-            {diff or "(diff vide ou fichier binaire sans patch textuel)"}
+            {diff or "(empty diff or binary file without a textual patch)"}
             ```
             """
         ).strip(),
@@ -512,16 +526,15 @@ def per_file_prompt(
         {
             "role": "system",
             "content": (
-                "Tu rediges des commentaires de commit en francais. "
-                "Sois precis, concis et factuel. Base-toi d'abord sur le chemin du "
-                "fichier et le contenu visible du diff. Utilise la structure du depot "
-                "uniquement pour lever une ambiguite locale. Utilise l'historique "
-                "recent seulement s'il confirme explicitement un element deja visible "
-                "dans le diff ou le chemin. N'invente jamais d'objectif de projet, "
-                "d'article, d'institution, de corpus, de livraison ou de contexte "
-                "absent du diff. "
-                "Ne decris pas Git lui-meme. Reponds seulement par 1 a 3 lignes "
-                "courtes en texte brut, sans puces ni syntaxe Markdown."
+                "You write commit comments in English. "
+                "Be precise, concise, and factual. Start from the file path and the "
+                "visible diff content. Use the repository structure only to resolve "
+                "local ambiguity. Use recent history only when it explicitly confirms "
+                "something already visible in the diff or path. Never invent project "
+                "goals, article topics, institutions, corpora, deliverables, or "
+                "context that are absent from the diff. "
+                "Do not describe Git itself. Reply with only 1 to 3 short lines of "
+                "plain text, with no bullets and no Markdown syntax."
             ),
         },
         {"role": "user", "content": user_content},
@@ -535,32 +548,32 @@ def summary_prompt(
     file_comments: list[tuple[ChangedFile, str]],
 ) -> list[dict[str, str]]:
     comments = "\n\n".join(
-        f"Fichier: {item.path}\nStatut: {status_label(item.status)} ({item.status})\nCommentaires:\n{comment}"
+        f"File: {item.path}\nStatus: {status_label(item.status, language='en')} ({item.status})\nComments:\n{comment}"
         for item, comment in file_comments
     )
     sections = [
-        format_prompt_section("Historique recent du depot", git_log),
-        format_prompt_section("Structure utile du depot", outline),
-        format_prompt_section("Commentaires obtenus fichier par fichier", comments),
+        format_prompt_section("Recent repository history", git_log),
+        format_prompt_section("Useful repository structure", outline),
+        format_prompt_section("Comments gathered file by file", comments),
         textwrap.dedent(
             """
-            Produis maintenant le message de commit final.
+            Now produce the final commit message.
 
-            Format obligatoire:
-            <resume clair et concis>
-            <detail concis 1>
-            <detail concis 2>
+            Required format:
+            <clear concise summary>
+            <concise detail 1>
+            <concise detail 2>
 
-            Contraintes:
-            - le message est en texte brut uniquement;
-            - aucune syntaxe Markdown: pas de puces, pas de liste numerotee, pas de bloc de code, pas de titre;
-            - une idee par ligne apres le resume global;
-            - le resume global tient sur une seule ligne;
-            - n'ecris jamais la formule "Résumé global du commit :";
-            - chaque ligne doit etre complete, sans mot tronque ni prefixe incomplet comme "Aj";
-            - les lignes de detail couvrent les changements significatifs sans tout repeter fichier par fichier si des lots sont similaires;
-            - conserve les noms propres, dossiers ou corpus importants seulement s'ils sont deja presents dans les commentaires fichier par fichier;
-            - n'ajoute pas de bloc de code, pas de titre supplementaire, pas de remarque meta.
+            Constraints:
+            - the message must be plain text only;
+            - no Markdown syntax: no bullets, no numbered list, no code block, no title;
+            - one idea per line after the global summary;
+            - the global summary must stay on a single line;
+            - never write the phrase "Commit summary:";
+            - each line must be complete, with no truncated word and no incomplete prefix;
+            - the detail lines should cover meaningful changes without repeating every file comment when several changes are similar;
+            - keep proper nouns, directories, or important corpora only if they already appear in the file-by-file comments;
+            - do not add a code block, an extra title, or meta commentary.
             """
         ).strip(),
     ]
@@ -570,11 +583,11 @@ def summary_prompt(
         {
             "role": "system",
             "content": (
-                "Tu transformes des observations de diff en message de commit francais. "
-                "Le resultat doit etre directement utilisable comme message Git en "
-                "texte brut. Ne conserve que les informations soutenues par les "
-                "commentaires fichier par fichier. Ignore tout contexte historique ou "
-                "structurel qui ajouterait des details absents de ces commentaires."
+                "You transform diff observations into an English commit message. "
+                "The result must be directly usable as a Git commit message in plain "
+                "text. Keep only information supported by the file-by-file comments. "
+                "Ignore any historical or structural context that would add details "
+                "missing from those comments."
             ),
         },
         {"role": "user", "content": user_content},
@@ -597,14 +610,14 @@ def alnum_char_count(text: str) -> int:
 def commit_message_quality_issue(message: str) -> str | None:
     lines = [line.strip() for line in message.splitlines() if line.strip()]
     if not lines:
-        return "message vide"
+        return "empty message"
 
     summary = lines[0]
     if alnum_char_count(summary) < MIN_COMMIT_SUMMARY_ALNUM_CHARS:
-        return f"resume trop court: {summary!r}"
+        return f"summary too short: {summary!r}"
 
     if alnum_char_count("\n".join(lines)) < MIN_COMMIT_MESSAGE_ALNUM_CHARS:
-        return "message global trop court"
+        return "overall message too short"
 
     return None
 
@@ -614,13 +627,13 @@ def retry_messages_after_short_output(
 ) -> list[dict[str, str]]:
     retry_instruction = textwrap.dedent(
         f"""
-        Ta reponse precedente est invalide car elle semble trop courte ou tronquee ({issue}).
-        Recommence depuis le debut.
+        Your previous reply is invalid because it looks too short or truncated ({issue}).
+        Start over from the beginning.
 
-        Contraintes supplementaires:
-        - ecris un resume complet, avec plusieurs mots;
-        - ne termine jamais sur un fragment de mot;
-        - si tu hesites, prefere une formulation generique mais complete.
+        Additional constraints:
+        - write a complete summary with multiple words;
+        - never end on a word fragment;
+        - if unsure, prefer a generic but complete wording.
         """
     ).strip()
     return [
@@ -631,12 +644,19 @@ def retry_messages_after_short_output(
 
 
 def normalize_commit_message(message: str) -> str:
-    summary_label = "Résumé global du commit :"
-    normalized_summary_label = "".join(
-        char
-        for char in unicodedata.normalize("NFKD", summary_label.lower())
-        if not unicodedata.combining(char)
-    ).rstrip(":")
+    summary_labels = (
+        "Résumé global du commit :",
+        "Commit summary:",
+        "Global commit summary:",
+    )
+    normalized_summary_labels = tuple(
+        "".join(
+            char
+            for char in unicodedata.normalize("NFKD", label.lower())
+            if not unicodedata.combining(char)
+        ).rstrip(":")
+        for label in summary_labels
+    )
 
     def extract_summary_content(line: str) -> str | None:
         line = strip_generated_text_prefix(line)
@@ -646,7 +666,10 @@ def normalize_commit_message(message: str) -> str:
             if not unicodedata.combining(char)
         )
         normalized = normalized.replace("*", "").replace("_", "").replace("`", "")
-        if not normalized.strip().startswith(normalized_summary_label):
+        if not any(
+            normalized.strip().startswith(label)
+            for label in normalized_summary_labels
+        ):
             return None
 
         stripped = re.sub(r"^[\s*_`]+", "", line.strip())
@@ -659,7 +682,7 @@ def normalize_commit_message(message: str) -> str:
 
     lines = [line.rstrip() for line in message.strip().splitlines()]
     if not lines:
-        raise RuntimeError("Le LLM a renvoye un message de commit vide.")
+        raise RuntimeError("The LLM returned an empty commit message.")
 
     leading_summaries: list[str] = []
     index = 0
@@ -687,7 +710,7 @@ def normalize_commit_message(message: str) -> str:
             canonical_summary = remaining_lines.pop(0)
 
         if not canonical_summary:
-            raise RuntimeError("Le message de commit final ne contient pas de resume.")
+            raise RuntimeError("The final commit message does not contain a summary.")
 
         lines = [canonical_summary]
         if remaining_lines:
@@ -695,7 +718,7 @@ def normalize_commit_message(message: str) -> str:
 
     normalized_lines = [strip_generated_text_prefix(line) for line in lines if line.strip()]
     if not normalized_lines:
-        raise RuntimeError("Le message de commit final est vide apres normalisation.")
+        raise RuntimeError("The final commit message is empty after normalization.")
 
     normalized = "\n".join(normalized_lines) + "\n"
     return normalized
@@ -718,7 +741,7 @@ def write_temp_commit_message(repo: Path, message: str) -> Path:
 def latest_commit_summary(repo: Path) -> str:
     commit_hash = run_git(["rev-parse", "--short", "HEAD"], repo)
     shortstat = run_git(["show", "--shortstat", "--format=", "-1", "HEAD"], repo)
-    lines = [f"Commit cree: {commit_hash}"]
+    lines = [f"Created commit: {commit_hash}"]
     if shortstat.strip():
         lines.append(shortstat.strip())
     return "\n".join(lines)
@@ -740,7 +763,7 @@ def push(repo: Path) -> str:
     output = run_git_for_display(["push"], repo)
     if output:
         return output
-    return "Push termine sans sortie Git."
+    return "Push completed with no Git output."
 
 
 def snapshot_index(repo: Path) -> str:
@@ -753,7 +776,7 @@ def restore_index(repo: Path, tree_hash: str) -> None:
 
 def print_section(title: str, body: str) -> None:
     print(f"\n== {title} ==")
-    print(body.strip() if body.strip() else "(vide)")
+    print(body.strip() if body.strip() else "(empty)")
 
 
 def format_changed_files(files: list[ChangedFile]) -> str:
@@ -767,13 +790,13 @@ def fallback_commit_message_for_excluded_files(
     excluded_files: list[ChangedFile],
 ) -> str:
     if excluded_files and all(is_llm_excluded_file(item) for item in excluded_files):
-        summary = "Mise à jour des fichiers de configuration Obsidian"
-        detail = "Fichiers sous .obsidian inclus dans le commit sans analyse LLM."
+        summary = "Update Obsidian configuration files"
+        detail = "Files under .obsidian were included in the commit without LLM analysis."
         return f"{summary}\n{detail}\n"
 
     return (
-        "Mise à jour de fichiers exclus de l'analyse LLM\n"
-        "Fichiers exclus de l'analyse LLM inclus dans le commit.\n"
+        "Update files excluded from LLM analysis\n"
+        "Files excluded from LLM analysis were included in the commit.\n"
     )
 
 
@@ -781,12 +804,12 @@ def fallback_commit_message_from_comments(
     file_comments: list[tuple[ChangedFile, str]],
 ) -> str:
     if not file_comments:
-        return "Mise à jour du depot\nMessage de commit genere sans resume LLM fiable.\n"
+        return "Repository update\nCommit message generated without a reliable LLM summary.\n"
 
     if len(file_comments) == 1:
-        summary = f"Mise à jour de {file_comments[0][0].path}"
+        summary = f"Update {file_comments[0][0].path}"
     else:
-        summary = f"Mise à jour de {len(file_comments)} fichiers"
+        summary = f"Update {len(file_comments)} files"
 
     detail_lines: list[str] = []
     for changed_file, comment in file_comments:
@@ -798,7 +821,10 @@ def fallback_commit_message_from_comments(
         if comment_lines:
             detail = comment_lines[0]
         else:
-            detail = f"{status_label(changed_file.status).capitalize()} de {changed_file.path}"
+            detail = (
+                f"{status_label(changed_file.status, language='en').capitalize()}: "
+                f"{changed_file.path}"
+            )
 
         if detail == summary or detail in detail_lines:
             continue
@@ -835,41 +861,41 @@ def generate_commit_message_from_file_comments(
                 return normalized_message
 
         if attempt < MAX_COMMIT_MESSAGE_ATTEMPTS:
-            print(f"Message de commit LLM invalide ({issue}). Nouvelle tentative...")
+            print(f"Invalid LLM commit message ({issue}). Retrying...")
             messages = retry_messages_after_short_output(messages, raw_message, issue)
             continue
 
         print(
-            f"Message de commit LLM invalide ({issue}). "
-            "Utilisation d'un fallback deterministe."
+            f"Invalid LLM commit message ({issue}). "
+            "Using a deterministic fallback."
         )
         return normalize_commit_message(
             fallback_commit_message_from_comments(file_comments)
         )
 
-    raise RuntimeError("Generation du message de commit impossible.")
+    raise RuntimeError("Unable to generate a commit message.")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Genere un message de commit avec Ollama, commit les changements "
-            "courants puis lance git push."
+            "Generate a commit message with Ollama, commit the current changes, "
+            "then run git push."
         )
     )
     parser.add_argument(
         "--model",
         default=os.environ.get("OLLAMA_COMMIT_MODEL", DEFAULT_MODEL),
-        help=f"modele Ollama a utiliser (defaut: {DEFAULT_MODEL})",
+        help=f"Ollama model to use (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--log-count",
         type=int,
         default=DEFAULT_LOG_COUNT,
         help=(
-            "nombre maximal de commits recents disponibles pour le LLM quand "
-            "le contexte historique est juge utile; 0 desactive "
-            f"(defaut: {DEFAULT_LOG_COUNT})"
+            "maximum number of recent commits available to the LLM when "
+            "historical context is considered useful; 0 disables it "
+            f"(default: {DEFAULT_LOG_COUNT})"
         ),
     )
     parser.add_argument(
@@ -877,8 +903,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_DIFF_CHARS,
         help=(
-            "taille maximale du diff envoye par fichier; le milieu est tronque "
-            f"au-dela (defaut: {DEFAULT_MAX_DIFF_CHARS})"
+            "maximum diff size sent per file; the middle is truncated beyond "
+            f"that limit (default: {DEFAULT_MAX_DIFF_CHARS})"
         ),
     )
     parser.add_argument(
@@ -886,27 +912,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_MAX_FILE_MB,
         help=(
-            "taille maximale d'un fichier a inclure dans le commit, en Mo; "
-            f"les fichiers plus gros sont desindexes (defaut: {DEFAULT_MAX_FILE_MB:g})"
+            "maximum file size to include in the commit, in MB; "
+            f"larger files are unstaged (default: {DEFAULT_MAX_FILE_MB:g})"
         ),
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help=(
-            "genere le message et affiche ce qui serait fait, sans commit ni push; "
-            "l'index Git initial est restaure en fin d'execution"
+            "generate the message and show what would be done, without committing "
+            "or pushing; the initial Git index is restored at the end"
         ),
     )
     parser.add_argument(
         "--no-push",
         action="store_true",
-        help="cree le commit mais ne lance pas git push",
+        help="create the commit but do not run git push",
     )
     parser.add_argument(
         "--skip-llm",
         action="store_true",
-        help="teste seulement la detection/staging des changements, sans appeler Ollama",
+        help="only test change detection and staging, without calling Ollama",
     )
     return parser
 
@@ -917,13 +943,13 @@ def main() -> int:
     repo = git_root(start)
     index_snapshot: str | None = None
 
-    print(f"Depot Git: {repo}")
+    print(f"Git repository: {repo}")
 
     if args.dry_run:
         index_snapshot = snapshot_index(repo)
 
     try:
-        print("Staging de tous les changements avec `git add -A`...")
+        print("Staging all changes with `git add -A`...")
         run_git(["add", "-A"], repo)
 
         changed_files = staged_changed_files(repo)
@@ -932,7 +958,7 @@ def main() -> int:
         )
         if commit_excluded_files:
             print_section(
-                "Fichiers exclus du commit",
+                "Files excluded from the commit",
                 format_changed_files(commit_excluded_files),
             )
             changed_files = staged_changed_files(repo)
@@ -942,53 +968,53 @@ def main() -> int:
         )
         if oversized_files:
             print_section(
-                f"Fichiers desindexes car > {args.max_file_mb:g} Mo",
+                f"Files unstaged because they exceed {args.max_file_mb:g} MB",
                 format_oversized_files(oversized_files),
             )
             changed_files = staged_changed_files(repo)
 
         if not changed_files:
-            print("Aucun changement a committer.")
+            print("No changes to commit.")
             return 0
 
-        print(f"{len(changed_files)} fichier(s) staged.")
+        print(f"{len(changed_files)} file(s) staged.")
         llm_changed_files, llm_excluded_files = split_llm_eligible_files(changed_files)
 
         if llm_excluded_files:
             print_section(
-                "Fichiers exclus de l'analyse LLM",
+                "Files excluded from LLM analysis",
                 format_changed_files(llm_excluded_files),
             )
 
         if args.skip_llm:
             print_section(
-                "Fichiers staged",
+                "Staged files",
                 format_changed_files(changed_files),
             )
-            print("Arret demande par --skip-llm.")
+            print("Stopping as requested by --skip-llm.")
             return 0
 
         commit_message: str
         if not llm_changed_files:
-            print("Aucun fichier eligible pour l'analyse LLM.")
+            print("No file is eligible for LLM analysis.")
             commit_message = normalize_commit_message(
                 fallback_commit_message_for_excluded_files(llm_excluded_files)
             )
         else:
-            print("Verification de l'API Python Ollama...")
+            print("Checking the Ollama Python API...")
             ollama = require_ollama()
             prompt_context = build_prompt_context(repo, llm_changed_files, args.log_count)
             if prompt_context.git_log:
-                print("Contexte LLM: historique Git recent inclus.")
+                print("LLM context: recent Git history included.")
             else:
-                print("Contexte LLM: historique Git omis pour limiter les faux positifs.")
+                print("LLM context: Git history omitted to limit false positives.")
             if prompt_context.outline:
-                print("Contexte LLM: structure du depot incluse.")
+                print("LLM context: repository structure included.")
             file_comments: list[tuple[ChangedFile, str]] = []
 
             for index, changed_file in enumerate(llm_changed_files, start=1):
                 print(
-                    f"[{index}/{len(llm_changed_files)}] Analyse LLM: {changed_file.path}"
+                    f"[{index}/{len(llm_changed_files)}] LLM analysis: {changed_file.path}"
                 )
                 diff = staged_diff_for_file(repo, changed_file)
                 limited_diff, truncated = truncate_text(diff, args.max_diff_chars)
@@ -1005,7 +1031,7 @@ def main() -> int:
                 )
                 file_comments.append((changed_file, comment))
 
-            print("Synthese globale du commit...")
+            print("Building the overall commit summary...")
             commit_message = generate_commit_message_from_file_comments(
                 ollama,
                 args.model,
@@ -1014,33 +1040,33 @@ def main() -> int:
                 file_comments=file_comments,
             )
 
-        print_section("Message de commit genere", commit_message)
+        print_section("Generated commit message", commit_message)
 
         if args.dry_run:
-            print("Dry-run: commit et push non executes.")
+            print("Dry run: commit and push were not executed.")
             return 0
 
-        print("Creation du commit...")
+        print("Creating commit...")
         commit_output = commit_with_message(repo, commit_message)
         print_section("Git commit", commit_output)
 
         if args.no_push:
-            print("Option --no-push: push non execute.")
+            print("`--no-push` set: push was not executed.")
             return 0
 
-        print("Push vers le remote configure...")
+        print("Pushing to the configured remote...")
         push_output = push(repo)
         print_section("Git push", push_output)
         return 0
     finally:
         if index_snapshot is not None:
             restore_index(repo, index_snapshot)
-            print("Index Git restaure apres dry-run.")
+            print("Git index restored after dry run.")
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (CommandError, RuntimeError) as exc:
-        print(f"\nErreur: {exc}", file=sys.stderr)
+        print(f"\nError: {exc}", file=sys.stderr)
         raise SystemExit(1)
