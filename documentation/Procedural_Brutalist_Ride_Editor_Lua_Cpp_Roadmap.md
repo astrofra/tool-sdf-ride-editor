@@ -2,632 +2,787 @@
 
 ## 1. Objective
 
-This roadmap defines how to split responsibilities between Lua and C/C++ for the procedural brutalist ride editor described in `Procedural_Brutalist_Ride_Editor_Specification.md`.
+This roadmap defines the Lua/C++ split for the procedural brutalist ride editor described in `Procedural_Brutalist_Ride_Editor_Specification.md`.
 
-The priority is **model generation performance**, not rendering or viewport integration.
+The clarified target is:
 
-The native side must own all heavy geometry work:
+- the final tool runs inside a Lua project;
+- the host uses `hg = require("harfang")`;
+- the procedural generator is loaded as `sdf = require("sdf-generator")`;
+- the native side should have as few dependencies as possible;
+- synchronous execution is preferred initially;
+- maintainability and simplicity are more important than premature async infrastructure.
+
+The native side must own the heavy work:
 
 - SDF evaluation;
 - meshing;
-- sector splitting;
-- LOD generation;
+- split / sector generation;
 - UV unwrapping;
-- baking of geometric textures such as AO / curvature / cavity;
-- export of generated artifacts.
+- texture baking;
+- geometry export.
 
-Lua should remain the orchestration and authoring layer:
+Lua remains the authoring layer:
 
-- scene editing logic;
-- UI/editor logic;
+- scene editing;
+- UI and editor workflow;
 - undo/redo;
-- procedural presets and artist-facing tools;
+- preset logic;
 - build triggering;
-- inspection of build results and diagnostics.
+- error reporting and inspection.
 
-The solution should stay **engine-agnostic** and **HARFANG-independent**, so that the same native core can be used:
-
-- from Lua in-process;
-- from a command-line tool;
-- later from another host if needed.
+Display integration and HARFANG import are out of scope for this roadmap. The native module is responsible only for producing geometry artifacts and related metadata.
 
 ---
 
-## 2. Architectural Position
+## 2. Primary Integration Target
 
-The correct boundary is **not** “Lua calls native functions for every geometric operation”.
+The primary integration target is a Lua native module:
 
-The correct boundary is:
-
-- Lua authors and edits a **procedural scene document**;
-- C++ owns the **compiled scene representation** and all heavy build steps;
-- Lua submits **coarse-grained build requests**;
-- C++ returns **artifacts, handles, manifests, and diagnostics**, not raw per-sample callbacks.
-
-This is important for performance:
-
-- Lua must never sit inside the SDF hot path;
-- Lua must never be called for per-voxel, per-triangle, or per-vertex decisions;
-- large meshes should not shuttle back and forth between Lua and C++;
-- the interface should be batch-oriented and job-oriented.
-
-In practice, the native core should be treated like a **content compiler**, not like a math helper library.
-
----
-
-## 3. Recommended Component Split
-
-### 3.1 Native core
-
-Create a portable native stack with these layers:
-
-1. `ride_core`
-   - pure C++ domain code;
-   - no HARFANG dependency;
-   - no editor UI dependency;
-   - owns scene compilation, meshing, UVs, baking, export.
-
-2. `ride_c_api`
-   - stable C ABI over the C++ core;
-   - small surface area;
-   - opaque handles instead of exposing the C++ class graph directly.
-
-3. `ride_cli`
-   - headless executable built on the same C API / core;
-   - used for offline generation, batch baking, CI, and reproducible builds.
-
-4. `ride_lua`
-   - thin Lua module over the C API;
-   - exposes document editing, job submission, and result queries;
-   - does not duplicate geometry logic.
-
-### 3.2 Suggested native modules
-
-- `scene`
-  - procedural source document;
-  - primitive definitions;
-  - transforms;
-  - noise / deformation descriptors;
-  - sector metadata;
-  - manual instance metadata.
-
-- `compiler`
-  - dirty tracking;
-  - scene normalization;
-  - dependency graph;
-  - sectorization;
-  - build caching.
-
-- `sdf`
-  - box SDFs;
-  - boolean / blend operators if introduced;
-  - damage and erosion modifiers;
-  - detail controls.
-
-- `mesher`
-  - SDF to polygon conversion;
-  - mesh cleanup;
-  - normal generation;
-  - optional LOD derivation.
-
-- `uv`
-  - UVAtlas integration;
-  - texel density and chart policy;
-  - atlas packing configuration.
-
-- `bake`
-  - AO;
-  - curvature / edge intensity;
-  - cavity;
-  - packed output texture generation.
-
-- `io`
-  - scene serialization;
-  - build manifests;
-  - OBJ export;
-  - native binary cache files.
-
----
-
-## 4. What the Lua/C++ Contact Surface Should Be
-
-The contact surface should be **document-oriented**, **transactional**, and **asynchronous where possible**.
-
-### 4.1 Scene document API
-
-Lua needs to create and edit a procedural source document.
-
-Recommended operations:
-
-- create / load / save a scene document;
-- create / delete / duplicate nodes;
-- batch-apply edit operations;
-- set primitive parameters;
-- set deformation parameters;
-- assign sector or streaming tags;
-- attach custom metadata for future editor use;
-- query bounds, hashes, dirty flags, and lightweight statistics.
-
-Important rule:
-
-- Lua should send **edit commands** or **batched property sets**;
-- C++ should own the validated internal scene representation.
-
-Recommended pattern:
-
-- `begin_edit(document)`
-- `apply_ops(document, ops[], count)`
-- `end_edit(document)`
-
-This keeps validation, hash recomputation, and dirty propagation on the native side and avoids excessive bridge traffic.
-
-### 4.2 Build API
-
-Lua needs to trigger builds without touching the heavy implementation details.
-
-Recommended build requests:
-
-- build one object;
-- build one sector;
-- build a sector range;
-- rebuild only dirty sectors;
-- generate LODs;
-- unwrap UVs;
-- bake textures;
-- export artifacts.
-
-Build requests should be explicit structs, for example:
-
-- target sectors;
-- resolution / quality tier;
-- meshing parameters;
-- UV atlas size;
-- bake channels;
-- output directory;
-- overwrite / cache policy;
-- deterministic seed.
-
-### 4.3 Job API
-
-Generation should be job-based rather than blocking the editor on every operation.
-
-Recommended job operations:
-
-- submit build job;
-- poll progress;
-- wait for completion;
-- cancel job;
-- fetch diagnostics;
-- fetch artifact manifest.
-
-Lua should receive:
-
-- job id;
-- progress percentage or coarse build stage;
-- warnings / errors;
-- output manifest path or in-memory manifest handle.
-
-### 4.4 Artifact API
-
-Lua does not need raw geometry for most operations.
-
-Lua usually needs:
-
-- mesh metadata;
-- output paths;
-- counts and timings;
-- bounding boxes;
-- sector-level status;
-- bake texture locations;
-- manifest summaries.
-
-Only expose full vertex/index buffers when there is a proven need.
-
-For performance, prefer:
-
-- native binary caches for meshes;
-- manifest files for metadata;
-- optional OBJ export as a secondary format.
-
-### 4.5 Diagnostics API
-
-The native side should report authoring and build problems clearly:
-
-- invalid parameters;
-- non-manifold output;
-- UV unwrap failure;
-- bake failure;
-- degenerate geometry;
-- cache invalidation reasons;
-- per-stage timing.
-
-This is part of the contact surface because the editor will need to explain build failures to the artist.
-
----
-
-## 5. Data Ownership and Performance Rules
-
-These rules matter more than the exact binding library.
-
-### 5.1 Keep the hot path native
-
-Never expose these as Lua-driven callbacks:
-
-- distance evaluation;
-- meshing inner loops;
-- per-triangle UV operations;
-- per-texel baking;
-- LOD simplification loops.
-
-### 5.2 Prefer coarse calls over chatty calls
-
-Bad shape:
-
-- `set_box_size(id, x, y, z)` called thousands of times individually;
-- `get_vertex(i)` repeated from Lua;
-- `evaluate_sdf(x, y, z)` called from Lua in a sampling loop.
-
-Good shape:
-
-- `apply_ops(document, ops[], count)`;
-- `build_dirty_sectors(document, options)`;
-- `get_build_manifest(job)`.
-
-### 5.3 Use opaque handles
-
-Expose handles such as:
-
-- `ride_document_handle`;
-- `ride_job_handle`;
-- `ride_artifact_handle`.
-
-Do not expose template-heavy C++ types directly as the stable public boundary.
-
-### 5.4 Make results disk-friendly
-
-Because the same system must work from Lua and CLI, every major output should have a serializable form:
-
-- scene document;
-- build cache;
-- mesh artifact;
-- bake artifact;
-- manifest;
-- diagnostics report.
-
-### 5.5 Support incremental rebuilds
-
-The native compiler should hash:
-
-- primitive parameters;
-- deformation parameters;
-- sector contents;
-- build options affecting output.
-
-Lua should be able to ask for:
-
-- dirty sectors only;
-- dirty UV/bake only;
-- full clean rebuild.
-
-Incremental rebuild support will matter more than micro-optimizing the binding layer.
-
----
-
-## 6. Binding Strategy Recommendation
-
-### Recommendation Summary
-
-The recommended architecture is:
-
-1. **C++ core**
-2. **small C ABI**
-3. **thin Lua binding on top of the C ABI**
-4. **CLI built on the same core**
-
-This is better than binding the full C++ object model directly to Lua.
-
-### 6.1 Why a C ABI should be the real boundary
-
-A C ABI gives:
-
-- host independence;
-- easier CLI reuse;
-- simpler testing;
-- lower coupling to a single Lua binding technology;
-- cleaner symbol visibility and memory ownership rules;
-- easier future reuse from Python, tools, or another engine.
-
-It also keeps the public surface stable even if the C++ internals change aggressively.
-
-### 6.2 Best default: thin manual Lua module over the C ABI
-
-For this project, the best baseline is a hand-controlled Lua module with a **small, explicit API**.
-
-Reasons:
-
-- the desired surface is narrow and domain-specific;
-- performance depends mainly on batching and native ownership, not on auto-generated wrappers;
-- memory ownership is easier to reason about;
-- error reporting can be tailored to the editor;
-- the same API can map cleanly to CLI semantics.
-
-This approach is also the least tied to any engine ecosystem.
-
-### 6.3 When `sol2` is a good option
-
-If the host application is a C++ executable embedding Lua directly, `sol2` is a strong convenience layer for the Lua-facing side because it is header-only, supports Lua 5.1+ / LuaJIT, and is explicitly positioned as a fast C++/Lua binding layer in its official documentation.
-
-Use it if:
-
-- the host is already C++;
-- you want pleasant Lua table marshaling;
-- you still keep the **real stable boundary** at the C API or a very small wrapper layer.
-
-Do **not** use `sol2` as a reason to expose the entire native object graph to Lua.
-
-### 6.4 When `LuaBridge3` is a good option
-
-`LuaBridge3` is also a reasonable lightweight choice if you want a smaller header-only wrapper and a simpler integration model.
-
-It is acceptable for:
-
-- a compact editor bridge;
-- exposing a few document and job objects;
-- cases where compile-time footprint matters.
-
-It is still better used as a thin facade than as the core architectural contract.
-
-### 6.5 Why `fabgen` is not the default recommendation
-
-`fabgen` is viable, but it is not the best default for this project.
-
-Reasons:
-
-- the project needs a **carefully limited** contact surface, not a broad automatically generated one;
-- the tool is historically tied to the HARFANG ecosystem, which is exactly what we want to avoid as an architectural dependency;
-- the generator itself is GPLv3, even though its README states that generated code can be licensed independently;
-- a custom build/codegen step adds complexity before the native API shape is stable.
-
-`fabgen` becomes more attractive only if:
-
-- the native API grows large;
-- many classes must be mirrored into Lua;
-- manual wrapper maintenance becomes a real burden.
-
-For the first implementation phase, it is more pragmatic to avoid generator-driven bindings.
-
-### 6.6 Best practical decision
-
-The most robust decision for phase 1 is:
-
-- define the C API first;
-- build the CLI second;
-- add a thin Lua binding third;
-- only revisit auto-generated bindings after the API stabilizes.
-
----
-
-## 7. Recommended Native API Shape
-
-The exact names can change, but the shape should look like this:
-
-```c
-typedef struct ride_document_t* ride_document_handle;
-typedef struct ride_job_t* ride_job_handle;
-
-typedef enum ride_status {
-  RIDE_STATUS_OK = 0,
-  RIDE_STATUS_INVALID_ARGUMENT,
-  RIDE_STATUS_BUILD_FAILED,
-  RIDE_STATUS_IO_FAILED
-} ride_status;
-
-ride_document_handle ride_document_create(void);
-ride_status ride_document_load(const char* path, ride_document_handle* out_doc);
-ride_status ride_document_save(ride_document_handle doc, const char* path);
-ride_status ride_document_apply_ops(
-  ride_document_handle doc,
-  const ride_edit_op* ops,
-  size_t op_count
-);
-
-ride_status ride_build_submit(
-  ride_document_handle doc,
-  const ride_build_request* request,
-  ride_job_handle* out_job
-);
-
-ride_status ride_job_poll(
-  ride_job_handle job,
-  ride_job_progress* out_progress
-);
-
-ride_status ride_job_get_manifest_json(
-  ride_job_handle job,
-  const char** out_json,
-  size_t* out_size
-);
-
-void ride_string_free(const char* ptr);
-void ride_job_destroy(ride_job_handle job);
-void ride_document_destroy(ride_document_handle doc);
+```lua
+hg = require("harfang")
+sdf = require("sdf-generator")
 ```
 
-Key idea:
+The roadmap therefore should not optimize around a general multi-host binding system first.
 
-- Lua manipulates documents and jobs;
-- C++ owns everything expensive;
-- large results come back as manifests, file paths, or bulk buffers.
+The correct priority order is:
 
----
+1. build a solid native core;
+2. expose it as a small Lua module;
+3. optionally keep the core reusable from a CLI or test harness;
+4. avoid engine-specific code inside the generator itself.
 
-## 8. CLI Strategy
-
-The CLI should not be treated as an afterthought.
-
-It is a core part of the architecture because it proves that the native system is not engine-bound.
-
-Suggested commands:
-
-- `ride build scene.ride.json --out build/`
-- `ride build --dirty --uv --bake`
-- `ride export-obj scene.ride.json --sector 12`
-- `ride bake scene.ride.json --channels ao,curvature,cavity`
-- `ride inspect-cache build/cache/`
-
-Suggested role split:
-
-- Lua/editor = interactive authoring and job triggering;
-- CLI = automation, regression testing, full offline generation, farm execution later if needed.
+The native generator should stay HARFANG-agnostic even if its first real consumer is a HARFANG-based Lua application.
 
 ---
 
-## 9. Delivery Roadmap
+## 3. Native Design Bias
 
-### Phase 1: Freeze the procedural source schema
+Whenever it makes sense, the native code should follow a simple “Orthodox C++” style:
+
+- keep the code readable to someone comfortable with C;
+- prefer explicit data structures over deep object hierarchies;
+- avoid exceptions in the core;
+- avoid RTTI in the core;
+- avoid clever template-heavy abstractions unless they clearly reduce complexity;
+- keep ownership, allocation, and error paths explicit;
+- prefer plain arrays, handles, POD-like structs, and straightforward control flow.
+
+For this project, that translates into:
+
+- simple structs for scene data and mesh data;
+- explicit build functions;
+- return-code based error handling;
+- minimal hidden allocation;
+- no dependency on large framework-style binding or serialization systems unless they solve a real problem.
+
+This should be treated as a design bias, not as dogma. The point is to keep the codebase understandable and robust.
+
+---
+
+## 4. Recommended Native Component Split
+
+The native side should be split into three layers only.
+
+### 4.1 `sdf_core`
+
+Pure C++ domain code with no HARFANG dependency and no Lua dependency.
+
+It owns:
+
+- scene document storage;
+- SDF primitive evaluation;
+- scene splitting;
+- mesh generation;
+- UV unwrap;
+- baking;
+- OBJ export.
+
+### 4.2 `sdf_lua`
+
+A thin Lua module that exposes `luaopen_sdf_generator`.
+
+It owns:
+
+- Lua stack marshaling;
+- userdata lifetime;
+- translation between Lua tables and native structs;
+- error propagation into Lua.
+
+It should not own generation logic.
+
+Implementation note:
+
+- this layer can be generated with Fabgen for consistency;
+- any remaining hand-written code should stay limited to module bootstrap or special-case conversions.
+
+### 4.3 `sdf_cli` (optional)
+
+A small CLI built on the same core is still useful for:
+
+- offline testing;
+- regression scenes;
+- bake debugging;
+- batch export.
+
+But it is optional and secondary. The roadmap should not be shaped around the CLI first.
+
+---
+
+## 5. How Complex the Scenegraph Should Be
+
+The tool does **not** need a full engine-style scenegraph.
+
+It needs a **procedural authoring graph** for SDF content, which is simpler.
+
+### 5.1 What the scenegraph must represent
+
+The scenegraph should represent:
+
+- every SDF primitive;
+- transform hierarchy when useful;
+- grouping for editing convenience;
+- build-related tags;
+- per-node procedural parameters;
+- optional material assignment or material tag;
+- optional per-node export flags.
+
+It does **not** need to represent:
+
+- rendering state;
+- draw calls;
+- runtime animation systems;
+- cameras;
+- light evaluation internals;
+- imported HARFANG nodes.
+
+### 5.2 Recommended complexity level
+
+The simplest useful structure is:
+
+- a flat node array;
+- stable integer node ids;
+- each node stores its parent id or `invalid`;
+- each node stores a type tag;
+- each node stores a local transform;
+- node-specific parameters live in explicit structs.
+
+This is usually better than a deep graph of heap-allocated polymorphic objects.
+
+Suggested node kinds:
+
+- `group`
+- `sdf_box`
+- `sdf_modifier`
+- `sector_marker`
+- `instance_marker`
+- `light_marker`
+
+If the initial production mostly uses deformed boxes, the first usable version can be even simpler:
+
+- `group`
+- `sdf_box`
+- `sector_marker`
+
+Everything else can be added later.
+
+### 5.3 Recommended scene data shape
+
+The scene document should look conceptually like this:
+
+```c
+struct SdfBoxParams
+{
+  Vec3 size;
+  float roundness;
+  uint32_t material_id;
+  uint32_t noise_id;
+};
+
+struct SceneNode
+{
+  uint32_t id;
+  uint32_t parent;
+  uint16_t kind;
+  uint16_t flags;
+  Transform local;
+  uint32_t payload_index;
+};
+
+struct SceneDocument
+{
+  Array<SceneNode> nodes;
+  Array<SdfBoxParams> boxes;
+  Array<NoiseParams> noises;
+  Array<MaterialSlot> materials;
+  BuildSettings build_settings;
+};
+```
+
+The important point is the separation between:
+
+- generic node bookkeeping;
+- primitive payload arrays;
+- build settings;
+- generated mesh artifacts.
+
+### 5.4 Where split strategy belongs
+
+Split strategy parameters such as:
+
+- cell size;
+- minimum bounds;
+- maximum bounds;
+- padding / overlap;
+- resolution limits;
+
+should primarily live in `BuildSettings`, not in the scenegraph itself.
+
+Per-node overrides can exist later if needed, but the default should be global build settings plus optional per-sector overrides.
+
+### 5.5 Recommendation
+
+Keep the authoring scenegraph narrow and explicit.
+
+Do not try to mirror a generic DCC or engine scenegraph. The tool is specialized and should stay specialized.
+
+---
+
+## 6. Recommended Geometry Representation
+
+The roadmap should separate:
+
+1. the **procedural source representation**;
+2. the **working mesh representation** used during generation and baking;
+3. the **export representation** written to OBJ.
+
+Trying to use one structure for all three will usually create unnecessary complexity.
+
+### 6.1 Procedural source representation
+
+This is the scenegraph described above:
+
+- nodes;
+- transforms;
+- SDF parameters;
+- deformation parameters;
+- build settings;
+- material tags.
+
+It does **not** store final triangles.
+
+### 6.2 Working mesh representation
+
+For meshing, UVs, and baking, use a native mesh struct that is explicit and simple.
+
+Recommended baseline:
+
+```c
+struct MeshVertex
+{
+  Vec3 position;
+  Vec3 normal;
+  Vec2 uv0;
+};
+
+struct MeshTriangle
+{
+  uint32_t i0;
+  uint32_t i1;
+  uint32_t i2;
+  uint32_t material_id;
+};
+
+struct Mesh
+{
+  Array<MeshVertex> vertices;
+  Array<MeshTriangle> triangles;
+};
+```
+
+This is intentionally triangle-centric.
+
+### 6.3 Triangles vs quads
+
+Quads are useful only as an authoring or intermediate convenience.
+
+The canonical generated representation should be triangles because:
+
+- meshing algorithms naturally produce triangles;
+- UV unwrap and bake pipelines are usually triangle-based;
+- OBJ export handles triangles well;
+- triangulated output simplifies later processing.
+
+If quads are useful for some procedural step, keep them as a temporary internal structure only.
+
+### 6.4 Materials
+
+Because display is out of scope, the material model should stay minimal.
+
+The native tool only needs enough information to:
+
+- tag faces or triangle ranges;
+- write OBJ groups or `usemtl`;
+- assign bake outputs consistently.
+
+Recommended material representation:
+
+- stable material id;
+- human-readable name;
+- optional export name;
+- optional bake policy flags.
+
+No shader graphs, no renderer state, no engine material objects.
+
+### 6.5 Normals and UVs
+
+Normals and UVs should be stored explicitly in the working mesh once generated.
+
+Recommended rule:
+
+- positions, normals, and UVs should already be split as needed for seams and hard edges before export.
+
+This avoids forcing the rest of the tool to deal with OBJ-style separate indexing for positions, UVs, and normals.
+
+### 6.6 Topology helpers
+
+If UV unwrap or baking needs adjacency, edge maps, or manifold checks, build those as temporary helper structures during processing.
+
+Do not make a half-edge or winged-edge structure the default persistent representation unless it proves necessary.
+
+### 6.7 Generated artifact boundary
+
+Generated geometry should live outside the scenegraph.
+
+Suggested artifact structure:
+
+```c
+struct SectorMeshArtifact
+{
+  uint32_t sector_id;
+  Mesh mesh;
+  Aabb bounds;
+  String obj_path;
+  String bake_path;
+};
+```
+
+This keeps authored data and generated data clearly separated.
+
+---
+
+## 7. Export Strategy
+
+For the first useful version, a vendorized or custom Wavefront OBJ writer is a good default.
+
+That aligns with the project constraints:
+
+- simple format;
+- easy to inspect;
+- easy to debug;
+- no dependency on a heavy scene SDK;
+- already compatible with the existing Assimp-based import path downstream.
+
+### 7.1 Recommendation
+
+Use OBJ as the primary exported geometry format for now.
+
+Recommended output set:
+
+- `.obj` for geometry;
+- `.mtl` if material grouping is needed;
+- baked textures as separate files;
+- a small manifest file if build metadata must be retained.
+
+### 7.2 What OBJ export must support
+
+The writer should support:
+
+- positions;
+- normals;
+- UVs;
+- triangle faces;
+- object/group naming;
+- material assignments;
+- deterministic output order.
+
+### 7.3 What should stay out of scope
+
+This roadmap should not include:
+
+- HARFANG import logic;
+- Assimp integration;
+- runtime scene instantiation;
+- display optimization.
+
+Those belong to the consumer side of the pipeline.
+
+---
+
+## 8. Generation Pipeline Inside the Tool
+
+The native pipeline should be straightforward and synchronous by default.
+
+Recommended build flow:
+
+1. validate the scene document;
+2. resolve transforms and primitive parameters;
+3. compute split / sector layout;
+4. evaluate SDF content per sector;
+5. generate polygonal meshes;
+6. compute normals;
+7. unwrap UVs;
+8. bake AO / curvature / sharp-edge or cavity data;
+9. export OBJ and textures;
+10. return build summary to Lua.
+
+Optional later improvements:
+
+- dirty-only rebuild;
+- per-sector caching;
+- optional background build mode.
+
+But none of those should complicate the first implementation.
+
+---
+
+## 9. Lua/C++ Contact Surface
+
+The Lua/C++ boundary should be:
+
+- coarse-grained;
+- synchronous first;
+- document-oriented;
+- easy to expose through Fabgen, with small manual shims only where needed.
+
+### 9.1 Recommended Lua-facing model
+
+Lua should manipulate a small number of concepts:
+
+- scene document;
+- nodes / primitives;
+- build settings;
+- build result.
+
+Conceptually:
+
+```lua
+local sdf = require("sdf-generator")
+
+local scene = sdf.new_scene()
+local node = scene:add_box{
+  parent = nil,
+  position = {0, 0, 0},
+  rotation = {0, 0, 0},
+  size = {10, 20, 10},
+  material = "concrete_a"
+}
+
+scene:set_split_settings{
+  cell_size = 32.0,
+  min = {-256, -64, -256},
+  max = {256, 256, 2048}
+}
+
+local result = scene:build{
+  out_dir = "build/ride",
+  export_obj = true,
+  bake = {"ao", "curvature", "edges"}
+}
+```
+
+### 9.2 Recommended operations
+
+Lua needs these operations first:
+
+- create / destroy scene;
+- load / save scene;
+- add / remove / duplicate node;
+- set transform;
+- set primitive parameters;
+- set split settings;
+- build scene;
+- build one sector;
+- export build artifacts;
+- query diagnostics and artifact paths.
+
+### 9.3 Synchronous first
+
+The default API should block until completion:
+
+- `scene:build(options)`
+- `scene:export_obj(options)`
+
+If progress reporting is needed, a simple callback or coarse progress hook can be added later.
+
+Do not design the first version around a job system unless real build times force it.
+
+### 9.4 Bulk transfer rule
+
+Lua should not pull raw geometry vertex-by-vertex unless there is a very specific tool need.
+
+Preferred patterns:
+
+- Lua edits procedural inputs;
+- C++ writes OBJ and baked textures;
+- Lua receives paths, counts, timings, and warnings.
+
+This keeps the bridge simple and fast.
+
+---
+
+## 10. Binding Strategy Recommendation
+
+### 10.1 Updated recommendation
+
+For this project, Fabgen is a valid and sensible choice for the Lua binding layer.
+
+Recommended order:
+
+1. write the native generator in simple C++;
+2. keep the public API small and explicit;
+3. generate the Lua-facing binding with Fabgen for consistency;
+4. keep any hand-written wrapper code minimal and localized.
+
+This fits the project if the goal is:
+
+- consistency with existing Lua/native integration style;
+- a generated binding rather than a large hand-written Lua C API layer;
+- readable generated code with few runtime dependencies;
+- a Lua module that still exposes a narrow, domain-specific surface.
+
+### 10.2 Why Fabgen fits here
+
+Fabgen is independent from HARFANG as a tool, even if it was originally created in that ecosystem.
+
+That makes it reasonable here because:
+
+- the final consumer is a Lua module, not a general multi-language SDK;
+- the binding layer can stay generated while the native core remains engine-agnostic;
+- generated code remains outside the core architecture and does not force HARFANG-specific design choices;
+- it can reduce wrapper boilerplate while preserving a simple C++ codebase.
+
+The roadmap therefore should treat Fabgen as a tooling choice, not as an engine dependency.
+
+### 10.3 How to use Fabgen without damaging the design
+
+Fabgen should generate bindings for a deliberately small API, not for an uncontrolled native object graph.
+
+Recommended rules:
+
+- expose scene, node, build settings, and build result concepts only;
+- avoid binding internal meshing, baking, or topology helper types unless Lua truly needs them;
+- prefer explicit entry points over large class hierarchies;
+- keep ownership and lifetime rules obvious from the Lua side;
+- avoid per-vertex or per-triangle Lua access in the first version.
+
+The important point is that Fabgen should automate the wrapper, not define the architecture.
+
+### 10.4 Manual binding is still a fallback
+
+If Fabgen proves awkward for one part of the API, a small manual shim is still acceptable.
+
+That fallback should be used for:
+
+- module bootstrap;
+- special conversions;
+- awkward ownership cases;
+- diagnostics formatting.
+
+But the main roadmap can assume Fabgen for consistency.
+
+### 10.5 Why not prioritize `sol2` or `LuaBridge3`
+
+They remain viable libraries, but if the team values consistency around Fabgen-generated Lua bindings, there is no strong reason to introduce another binding abstraction first.
+
+The better choice is to keep:
+
+- simple C++ in the core;
+- Fabgen at the boundary;
+- explicit data structures throughout the API.
+
+### 10.6 Internal boundary still matters
+
+Even when Fabgen is used, the native code should still keep a clean separation between:
+
+- binding definitions;
+- scene/document code;
+- generation code;
+- export code.
+
+That separation matters more than the wrapper technology itself.
+
+---
+
+## 11. Dependencies Policy
+
+The dependency policy should be conservative.
+
+### 11.1 Baseline
+
+Prefer a baseline of:
+
+- the Lua C API;
+- the C/C++ runtime;
+- project-local code;
+- small vendorized single-purpose helpers when justified.
+
+### 11.2 Avoid early heavy dependencies
+
+Avoid introducing large dependencies for:
+
+- scenegraph management;
+- serialization;
+- mesh containers;
+- full asset SDKs.
+
+Fabgen is acceptable here as a targeted binding tool rather than as a general framework dependency.
+
+### 11.3 UV unwrap and bake dependencies
+
+UV unwrap and baking are the two areas most likely to justify external code.
+
+The roadmap should therefore keep those behind narrow internal interfaces:
+
+- `unwrap_mesh(mesh, settings)`
+- `bake_mesh(mesh, bake_settings)`
+
+This keeps the core architecture stable even if the implementation changes later.
+
+### 11.4 Recommendation
+
+Do not hard-wire the entire architecture to one third-party UV or bake library at the roadmap stage.
+
+Keep those as replaceable backends behind simple internal APIs.
+
+---
+
+## 12. Delivery Roadmap
+
+### Phase 1: Define the authoring document and mesh structures
 
 Deliver:
 
 - scene document format;
-- primitive and deformation descriptors;
-- build request schema;
-- manifest schema.
+- node kinds;
+- primitive parameter structs;
+- split settings;
+- mesh structs;
+- material slot structs.
 
 Exit criterion:
 
-- a scene can be serialized and reloaded without loss of procedural intent.
+- the codebase has a stable in-memory representation for authored scene data and generated mesh data.
 
-### Phase 2: Build the native core without Lua
+### Phase 2: Build the native core
 
 Deliver:
 
-- document model in C++;
-- SDF evaluation;
-- meshing;
-- sector splitting;
-- OBJ export;
-- dirty tracking.
+- scene document implementation;
+- SDF box primitives;
+- transform resolution;
+- split / sector generation;
+- triangle mesh generation;
+- normal generation;
+- OBJ writer.
 
 Exit criterion:
 
-- a sample scene can be generated headlessly from the command line.
+- a sample scene can generate OBJ output from the native side.
 
-### Phase 3: Add the stable C API
+### Phase 3: Add Lua binding
 
 Deliver:
 
-- opaque handles;
-- document editing API;
-- build API;
-- job API;
-- diagnostics API.
+- `luaopen_sdf_generator`;
+- Fabgen binding definition files;
+- scene userdata;
+- node creation/edit functions;
+- build and export entry points;
+- diagnostics reporting.
 
 Exit criterion:
 
-- a small C test program can create a scene, build it, and export artifacts.
+- Lua can build a procedural scene and export OBJ through `require("sdf-generator")`.
 
-### Phase 4: Add the Lua bridge
+### Phase 4: Add UV unwrap
 
 Deliver:
 
-- `ride_native` Lua module;
-- Lua document wrappers;
-- job polling;
-- manifest access;
-- error translation into Lua-friendly messages.
+- UV data in working meshes;
+- unwrap settings;
+- seam handling;
+- export of UV-ready OBJ.
 
 Exit criterion:
 
-- Lua can create or load a scene, edit it, trigger a build, and inspect the manifest.
+- generated OBJ files contain usable UV coordinates.
 
-### Phase 5: Integrate UV unwrapping and baking
+### Phase 5: Add bake pipeline
 
 Deliver:
 
-- UVAtlas integration;
-- bake pipeline;
-- packed texture output;
-- per-stage diagnostics and timings.
+- AO bake;
+- curvature or edge bake;
+- cavity or sharp-edge signal;
+- packed output textures;
+- bake result metadata.
 
 Exit criterion:
 
-- generated sectors come out with mesh + UVs + baked maps from both Lua and CLI.
+- each generated sector can produce geometry plus baked texture outputs.
 
-### Phase 6: Add incremental and production-oriented features
+### Phase 6: Add pragmatic production improvements
 
 Deliver:
 
-- per-sector caching;
-- partial rebuilds;
-- LOD generation;
-- deterministic build hashing;
-- regression scenes and performance baselines.
+- dirty rebuild support;
+- per-sector cache files;
+- optional CLI;
+- optional background build mode if needed;
+- performance baselines.
 
 Exit criterion:
 
-- repeated builds avoid recomputing unchanged sectors and timings are measurable.
+- the tool is production-usable without changing the core architecture.
 
 ---
 
-## 10. Open Questions
+## 13. Open Questions
 
-These should be answered before the API is considered stable.
+1. Do we want the scene document stored as JSON, a custom text format, or a small binary format?
 
-1. What is the authoritative scene format?
-   - Human-readable JSON is convenient.
-   - MessagePack or a binary schema may be better if document size becomes large.
+2. Is the first native module target plain Lua only, or must it support LuaJIT too?
 
-2. Will the editor runtime be standard Lua, LuaJIT, or both?
-   - If LuaJIT is allowed, FFI over a C ABI becomes a more attractive option.
-   - If plain Lua compatibility is required, a compiled Lua module is the safer baseline.
+3. Do we still want to depend on Microsoft UVAtlas, or should the first version keep UV unwrap behind a local backend interface and decide later?
 
-3. What meshing algorithm is preferred?
-   - Marching cubes, dual contouring, or another approach will affect topology quality, UV conditioning, and bake quality.
+4. Should baked outputs be one packed texture per sector, or one packed texture per exported object?
 
-4. How much of the scene document should live natively versus mirrored in Lua?
-   - For performance, the build-authoritative copy should live in C++.
-   - Lua may still keep a lightweight UI mirror for tools and undo/redo.
+5. Do material ids need to be stable across rebuilds for downstream HARFANG import logic?
 
-5. Should baking remain CPU-only at first?
-   - CPU baking is easier to keep engine-agnostic.
-   - A headless GPU backend may be worth adding later if bake times dominate.
+6. Should sector bounds be fully global build settings, or do we need per-zone overrides from day one?
 
-6. What is the internal cache format?
-   - Native binary mesh caches will be faster than OBJ.
-   - OBJ should remain an interchange/export format, not the primary cache.
+7. Is there any real need to expose raw generated vertices back to Lua, or is path-based artifact exchange enough?
 
-7. How much validation should happen on edit versus on build?
-   - Early validation improves UX.
-   - Deferred validation can reduce edit-time overhead.
+8. Do lights and manual instances need native ownership now, or can they remain Lua/editor metadata until rendering integration matters?
 
-8. Is UVAtlas sufficient for all target meshes?
-   - Its official documentation recommends mesh cleaning before atlas generation.
-   - The roadmap should include a conditioning step before unwrap.
+9. Is deterministic OBJ output required for regression testing and source control diffs?
 
-9. What is the minimum artifact set for the first usable version?
-   - Mesh only?
-   - Mesh + UVs?
-   - Mesh + UVs + baked texture pack?
-
-10. Do manual instances and lights need to cross the same native boundary now?
-   - If display is out of scope, they may remain metadata-only in phase 1.
+10. What is the smallest acceptable bake feature set for the first production milestone: AO only, AO plus curvature, or the full packed map?
 
 ---
 
-## 11. Final Recommendation
+## 14. Final Recommendation
 
-For this project, the safest and most scalable structure is:
+The simplest architecture that matches the stated constraints is:
 
-- **C++ owns procedural generation, UVs, baking, and caching**
-- **a small C ABI is the real integration contract**
-- **Lua stays as the authoring/orchestration layer**
-- **CLI and Lua both use the same native core**
-- **binding generation is optional, not foundational**
+- a simple C++ core with explicit scene and mesh structs;
+- a Fabgen-generated Lua binding exposed as `require("sdf-generator")`;
+- a narrow procedural authoring graph, not a full scene engine graph;
+- a triangle-centric working mesh representation with explicit normals and UVs;
+- OBJ export as the primary geometry handoff format;
+- UV and bake code behind replaceable internal interfaces;
+- synchronous builds first, async only if later proven necessary.
 
-If a binding helper is still desired, prefer:
-
-1. thin manual Lua binding over the C API;
-2. `sol2` or `LuaBridge3` as convenience layers if embedding Lua inside a C++ host;
-3. `fabgen` only after the API becomes broad enough to justify code generation.
-
-This keeps the project fast, portable, and independent from HARFANG while leaving room for a richer editor later.
+This keeps the native side small, understandable, and aligned with the actual production use case while preserving consistency in the Lua binding layer.
