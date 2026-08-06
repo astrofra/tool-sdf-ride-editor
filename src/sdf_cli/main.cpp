@@ -10,6 +10,7 @@
 #include "sdf/raytrace.h"
 #include "sdf/scene.h"
 #include "sdf/scene_io.h"
+#include "sdf/uv_unwrap.h"
 
 namespace
 {
@@ -47,6 +48,7 @@ void print_usage()
 {
   std::cout
     << "Usage: sdf_cli [--scene PATH] [--out PATH] [--cell-size VALUE]\n"
+    << "               [--unwrap-uvs] [--uv-resolution N] [--uv-padding N]\n"
     << "               [--debug-render PATH] [--debug-mode depth|normal|ao]\n"
     << "               [--render-width N] [--render-height N]\n"
     << "               [--camera-front | --camera-left-3q | --camera-right-3q]\n"
@@ -62,7 +64,9 @@ int main(int argc, char **argv)
   std::filesystem::path debug_render_path;
   bool has_cell_size_override = false;
   float cell_size_override = 0.0f;
+  bool unwrap_uvs = false;
   sdf::DebugRenderSettings debug_settings;
+  sdf::UvUnwrapSettings unwrap_settings;
 
   for (int index = 1; index < argc; ++index)
   {
@@ -83,6 +87,12 @@ int main(int argc, char **argv)
     if (argument == "--debug-render" && index + 1 < argc)
     {
       debug_render_path = argv[++index];
+      continue;
+    }
+
+    if (argument == "--unwrap-uvs")
+    {
+      unwrap_uvs = true;
       continue;
     }
 
@@ -107,6 +117,18 @@ int main(int argc, char **argv)
     {
       cell_size_override = std::stof(argv[++index]);
       has_cell_size_override = true;
+      continue;
+    }
+
+    if (argument == "--uv-resolution" && index + 1 < argc)
+    {
+      unwrap_settings.resolution = static_cast<std::uint32_t>(std::stoul(argv[++index]));
+      continue;
+    }
+
+    if (argument == "--uv-padding" && index + 1 < argc)
+    {
+      unwrap_settings.padding = static_cast<std::uint32_t>(std::stoul(argv[++index]));
       continue;
     }
 
@@ -171,9 +193,21 @@ int main(int argc, char **argv)
   }
 
   const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+  sdf::Mesh export_mesh = build.mesh;
+  sdf::UvUnwrapResult unwrap_result;
+
+  if (unwrap_uvs)
+  {
+    if (!sdf::unwrap_mesh_uvs(build.mesh, unwrap_settings, &export_mesh, &unwrap_result, &error_message))
+    {
+      std::cerr << "UV unwrap failed: " << error_message << '\n';
+      return 1;
+    }
+  }
+
   const sdf::RayScene ray_scene = sdf::build_ray_scene(build.mesh);
 
-  if (!sdf::write_obj(build.mesh, output_path, &error_message))
+  if (!sdf::write_obj(export_mesh, output_path, &error_message))
   {
     std::cerr << "OBJ export failed: " << error_message << '\n';
     return 1;
@@ -201,8 +235,19 @@ int main(int argc, char **argv)
   std::cout << "Cell size: " << scene_file.build_settings.cell_size << '\n';
   std::cout << "Sampled cells: " << build.sampled_cells << '\n';
   std::cout << "Occupied cells: " << build.occupied_cells << '\n';
-  std::cout << "Vertices: " << build.mesh.vertices.size() << '\n';
-  std::cout << "Triangles: " << build.mesh.triangles.size() << '\n';
+  std::cout << "Generated vertices: " << build.mesh.vertices.size() << '\n';
+  std::cout << "Generated triangles: " << build.mesh.triangles.size() << '\n';
+  std::cout << "Export vertices: " << export_mesh.vertices.size() << '\n';
+  std::cout << "Export triangles: " << export_mesh.triangles.size() << '\n';
+  if (unwrap_uvs)
+  {
+    std::cout << "UV unwrap: enabled\n";
+    std::cout << "UV charts: " << unwrap_result.chart_count << '\n';
+    std::cout << "UV atlas pages: " << unwrap_result.atlas_count << '\n';
+    std::cout << "UV atlas resolution: " << unwrap_result.atlas_width << 'x' << unwrap_result.atlas_height << '\n';
+    std::cout << "UV atlas utilization: " << unwrap_result.utilization * 100.0f << "%\n";
+    std::cout << "UV texels per unit: " << unwrap_result.texels_per_unit << '\n';
+  }
   std::cout << "OBJ: " << output_path.string() << '\n';
   if (!debug_render_path.empty())
   {

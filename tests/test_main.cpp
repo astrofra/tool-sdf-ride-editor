@@ -13,6 +13,7 @@
 #include "sdf/raytrace.h"
 #include "sdf/scene.h"
 #include "sdf/scene_io.h"
+#include "sdf/uv_unwrap.h"
 
 namespace
 {
@@ -286,6 +287,46 @@ void test_debug_render_writes_png()
   expect_true(std::filesystem::file_size(output_path) > 0, "debug PNG output should not be empty");
 }
 
+void test_uv_unwrap_generates_normalized_uvs()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 6.0f;
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  sdf::UvUnwrapSettings settings;
+  settings.resolution = 512;
+  settings.padding = 4;
+
+  sdf::Mesh unwrapped_mesh;
+  sdf::UvUnwrapResult result;
+  const bool unwrap_ok = sdf::unwrap_mesh_uvs(build.mesh, settings, &unwrapped_mesh, &result, &error_message);
+
+  expect_true(unwrap_ok, "uv unwrap should succeed");
+  expect_true(!unwrapped_mesh.vertices.empty(), "uv unwrap should output vertices");
+  expect_true(unwrapped_mesh.triangles.size() == build.mesh.triangles.size(), "uv unwrap should preserve triangle count");
+  expect_true(result.atlas_count == 1, "uv unwrap should keep the sample scene in a single atlas");
+  expect_true(result.atlas_width > 0 && result.atlas_height > 0, "uv unwrap should report a non-empty atlas");
+  expect_true(result.chart_count > 0, "uv unwrap should create at least one chart");
+
+  for (const sdf::MeshTriangle &triangle : unwrapped_mesh.triangles)
+  {
+    expect_true(triangle.i0 < unwrapped_mesh.vertices.size(), "unwrapped triangle i0 should stay within the vertex buffer");
+    expect_true(triangle.i1 < unwrapped_mesh.vertices.size(), "unwrapped triangle i1 should stay within the vertex buffer");
+    expect_true(triangle.i2 < unwrapped_mesh.vertices.size(), "unwrapped triangle i2 should stay within the vertex buffer");
+  }
+
+  for (const sdf::MeshVertex &vertex : unwrapped_mesh.vertices)
+  {
+    expect_true(vertex.uv0.x >= -0.001f && vertex.uv0.x <= 1.001f, "unwrapped u should stay normalized");
+    expect_true(vertex.uv0.y >= -0.001f && vertex.uv0.y <= 1.001f, "unwrapped v should stay normalized");
+  }
+}
+
 void test_invalid_scene_file_reports_an_error()
 {
   const std::filesystem::path invalid_path = std::filesystem::current_path() / "test_output" / "invalid_scene_missing_bounds.sdfscene";
@@ -341,6 +382,7 @@ int main()
     test_obj_writer_emits_a_file();
     test_ray_scene_intersection_on_generated_mesh();
     test_debug_render_writes_png();
+    test_uv_unwrap_generates_normalized_uvs();
     test_invalid_scene_file_reports_an_error();
     test_invalid_modifier_target_reports_an_error();
   }

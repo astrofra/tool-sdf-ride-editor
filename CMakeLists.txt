@@ -24,6 +24,8 @@ add_library(sdf_core
   src/sdf_core/src/raytrace.cpp
   src/sdf_core/src/scene.cpp
   src/sdf_core/src/scene_io.cpp
+  src/sdf_core/src/uv_unwrap.cpp
+  vendor/xatlas/xatlas.cpp
 )
 
 target_include_directories(sdf_core
@@ -31,7 +33,20 @@ target_include_directories(sdf_core
     src/sdf_core/include
   PRIVATE
     vendor/stb
+    vendor/xatlas
 )
+
+if(MSVC)
+  set_source_files_properties(vendor/xatlas/xatlas.cpp PROPERTIES
+    COMPILE_DEFINITIONS "XA_DEBUG=0;NDEBUG"
+    COMPILE_OPTIONS "/W0"
+  )
+else()
+  set_source_files_properties(vendor/xatlas/xatlas.cpp PROPERTIES
+    COMPILE_DEFINITIONS "XA_DEBUG=0;NDEBUG"
+    COMPILE_OPTIONS "-w"
+  )
+endif()
 
 target_compile_features(sdf_core PUBLIC cxx_std_20)
 
