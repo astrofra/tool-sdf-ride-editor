@@ -3,8 +3,11 @@
 #include <iostream>
 #include <string>
 
+#include "sdf/debug_render.h"
 #include "sdf/generator.h"
+#include "sdf/image_write.h"
 #include "sdf/obj_writer.h"
+#include "sdf/raytrace.h"
 #include "sdf/scene.h"
 #include "sdf/scene_io.h"
 
@@ -20,9 +23,34 @@ std::filesystem::path default_scene_path()
   return std::filesystem::path(SDF_PROJECT_SOURCE_DIR) / "scenes" / "frame_006_blockout.sdfscene";
 }
 
+bool parse_debug_mode(const std::string &text, sdf::DebugRenderMode *mode)
+{
+  if (text == "depth")
+  {
+    *mode = sdf::DebugRenderMode::Depth;
+    return true;
+  }
+  if (text == "normal")
+  {
+    *mode = sdf::DebugRenderMode::Normal;
+    return true;
+  }
+  if (text == "ao")
+  {
+    *mode = sdf::DebugRenderMode::Ao;
+    return true;
+  }
+  return false;
+}
+
 void print_usage()
 {
-  std::cout << "Usage: sdf_cli [--scene PATH] [--out PATH] [--cell-size VALUE]\n";
+  std::cout
+    << "Usage: sdf_cli [--scene PATH] [--out PATH] [--cell-size VALUE]\n"
+    << "               [--debug-render PATH] [--debug-mode depth|normal|ao]\n"
+    << "               [--render-width N] [--render-height N]\n"
+    << "               [--camera-front | --camera-left-3q | --camera-right-3q]\n"
+    << "               [--ao-samples N] [--ao-max-distance F]\n";
 }
 
 }  // namespace
@@ -31,8 +59,10 @@ int main(int argc, char **argv)
 {
   std::filesystem::path scene_path = default_scene_path();
   std::filesystem::path output_path = "artifacts/generated/frame_006_blockout.obj";
+  std::filesystem::path debug_render_path;
   bool has_cell_size_override = false;
   float cell_size_override = 0.0f;
+  sdf::DebugRenderSettings debug_settings;
 
   for (int index = 1; index < argc; ++index)
   {
@@ -50,6 +80,23 @@ int main(int argc, char **argv)
       continue;
     }
 
+    if (argument == "--debug-render" && index + 1 < argc)
+    {
+      debug_render_path = argv[++index];
+      continue;
+    }
+
+    if (argument == "--debug-mode" && index + 1 < argc)
+    {
+      if (!parse_debug_mode(argv[++index], &debug_settings.mode))
+      {
+        std::cerr << "Unknown debug mode.\n";
+        print_usage();
+        return 1;
+      }
+      continue;
+    }
+
     if (argument == "--out" && index + 1 < argc)
     {
       output_path = argv[++index];
@@ -60,6 +107,48 @@ int main(int argc, char **argv)
     {
       cell_size_override = std::stof(argv[++index]);
       has_cell_size_override = true;
+      continue;
+    }
+
+    if (argument == "--render-width" && index + 1 < argc)
+    {
+      debug_settings.width = std::stoi(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--render-height" && index + 1 < argc)
+    {
+      debug_settings.height = std::stoi(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--camera-front")
+    {
+      debug_settings.camera_preset = sdf::DebugCameraPreset::Front;
+      continue;
+    }
+
+    if (argument == "--camera-left-3q")
+    {
+      debug_settings.camera_preset = sdf::DebugCameraPreset::LeftThreeQuarter;
+      continue;
+    }
+
+    if (argument == "--camera-right-3q")
+    {
+      debug_settings.camera_preset = sdf::DebugCameraPreset::RightThreeQuarter;
+      continue;
+    }
+
+    if (argument == "--ao-samples" && index + 1 < argc)
+    {
+      debug_settings.ao_samples = std::stoi(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--ao-max-distance" && index + 1 < argc)
+    {
+      debug_settings.ao_max_distance = std::stof(argv[++index]);
       continue;
     }
 
@@ -82,11 +171,28 @@ int main(int argc, char **argv)
   }
 
   const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+  const sdf::RayScene ray_scene = sdf::build_ray_scene(build.mesh);
 
   if (!sdf::write_obj(build.mesh, output_path, &error_message))
   {
     std::cerr << "OBJ export failed: " << error_message << '\n';
     return 1;
+  }
+
+  if (!debug_render_path.empty())
+  {
+    sdf::Rgb8Image image;
+    if (!sdf::render_debug_image(ray_scene, debug_settings, &image, &error_message))
+    {
+      std::cerr << "Debug render failed: " << error_message << '\n';
+      return 1;
+    }
+
+    if (!sdf::write_png_rgb8(image, debug_render_path, &error_message))
+    {
+      std::cerr << "Debug image write failed: " << error_message << '\n';
+      return 1;
+    }
   }
 
   std::cout << "Scene file: " << scene_path.string() << '\n';
@@ -98,6 +204,10 @@ int main(int argc, char **argv)
   std::cout << "Vertices: " << build.mesh.vertices.size() << '\n';
   std::cout << "Triangles: " << build.mesh.triangles.size() << '\n';
   std::cout << "OBJ: " << output_path.string() << '\n';
+  if (!debug_render_path.empty())
+  {
+    std::cout << "Debug image: " << debug_render_path.string() << '\n';
+  }
 
   return 0;
 }

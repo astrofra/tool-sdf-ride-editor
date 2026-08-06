@@ -17,8 +17,11 @@ function(sdf_apply_warnings target_name)
 endfunction()
 
 add_library(sdf_core
+  src/sdf_core/src/debug_render.cpp
   src/sdf_core/src/generator.cpp
+  src/sdf_core/src/image_write.cpp
   src/sdf_core/src/obj_writer.cpp
+  src/sdf_core/src/raytrace.cpp
   src/sdf_core/src/scene.cpp
   src/sdf_core/src/scene_io.cpp
 )
@@ -26,6 +29,8 @@ add_library(sdf_core
 target_include_directories(sdf_core
   PUBLIC
     src/sdf_core/include
+  PRIVATE
+    vendor/stb
 )
 
 target_compile_features(sdf_core PUBLIC cxx_std_20)
