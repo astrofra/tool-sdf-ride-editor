@@ -71,8 +71,11 @@ SceneDocument make_frame_006_blockout_scene()
   };
 
   scene.noise_modifiers = {
-    make_noise_modifier("left_tower_decay", "left_tower", 0.75f, 0.18f, 17, 3, ModifierMask::TopEdges, 4.0f),
-    make_noise_modifier("right_tower_decay", "right_tower", 0.95f, 0.14f, 29, 3, ModifierMask::TopEdges, 5.0f)
+    make_noise_modifier("left_tower_top_edges", "left_tower", 0.75f, 0.18f, 17, 3, ModifierMask::TopEdges, 4.0f),
+    make_noise_modifier("right_tower_edges", "right_tower", 0.70f, 0.16f, 29, 3, ModifierMask::Edges, 3.5f),
+    make_noise_modifier("rear_mass_top", "central_rear_mass", 0.55f, 0.11f, 43, 2, ModifierMask::Top, 4.5f),
+    make_noise_modifier("left_background_bottom", "left_background_mass", 0.45f, 0.20f, 61, 2, ModifierMask::Bottom, 3.0f),
+    make_noise_modifier("catwalk_all", "left_catwalk_mass", 0.25f, 0.28f, 73, 2, ModifierMask::All, 1.5f)
   };
 
   scene.box_cut_modifiers = {

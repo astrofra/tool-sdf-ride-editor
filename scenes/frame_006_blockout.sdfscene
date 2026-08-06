@@ -24,8 +24,17 @@ box add left_marker_head -20 7 8 2.5 3 2.5
 box add left_marker_stem -20 2 8 1 2 1
 box add debris_slab -8 1 20 2 1 2
 
-noise_displace_masked left_tower_decay left_tower 0.75 0.18 17 3 top_edges 4.0
-noise_displace_masked right_tower_decay right_tower 0.95 0.14 29 3 top_edges 5.0
+# Mask demo:
+#   top_edges on left_tower
+#   edges on right_tower
+#   top on central_rear_mass
+#   bottom on left_background_mass
+#   all on left_catwalk_mass
+noise_displace_masked left_tower_top_edges left_tower 0.75 0.18 17 3 top_edges 4.0
+noise_displace_masked right_tower_edges right_tower 0.70 0.16 29 3 edges 3.5
+noise_displace_masked rear_mass_top central_rear_mass 0.55 0.11 43 2 top 4.5
+noise_displace_masked left_background_bottom left_background_mass 0.45 0.20 61 2 bottom 3.0
+noise_displace_masked catwalk_all left_catwalk_mass 0.25 0.28 73 2 all 1.5
 
 box_cut left_tower_opening left_tower 0 2 0 2 4 2
 box_cut right_tower_opening right_tower -5 -2 -2 1.5 4 1.5
