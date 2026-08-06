@@ -82,33 +82,67 @@ float estimate_ambient_occlusion(
   const RayScene &scene,
   const Vec3 &position,
   const Vec3 &shading_normal,
-  int sample_count,
+  int min_sample_count,
+  int max_sample_count,
+  float error_threshold,
   float max_distance,
-  std::uint32_t seed)
+  std::uint32_t seed,
+  int *used_sample_count)
 {
-  if (sample_count <= 0 || max_distance <= 0.0f)
+  if (max_sample_count <= 0 || max_distance <= 0.0f)
   {
+    if (used_sample_count != nullptr)
+    {
+      *used_sample_count = 0;
+    }
     return 1.0f;
   }
 
+  const int clamped_max_sample_count = std::max(1, max_sample_count);
+  const int clamped_min_sample_count = std::clamp(min_sample_count, 1, clamped_max_sample_count);
   const Vec3 scene_extent = scene.bounds.max - scene.bounds.min;
   const float scene_diagonal = length(scene_extent);
   const float bias = std::max(1.0e-3f, scene_diagonal * 1.0e-4f);
 
   Rng rng(seed);
-  int unoccluded = 0;
-  for (int sample_index = 0; sample_index < sample_count; ++sample_index)
+  float unoccluded_sum = 0.0f;
+  int samples_used = 0;
+  for (int sample_index = 0; sample_index < clamped_max_sample_count; ++sample_index)
   {
     Ray ray;
     ray.origin = position + shading_normal * bias;
     ray.direction = sample_cosine_hemisphere(shading_normal, &rng);
     if (!is_occluded(scene, ray, max_distance))
     {
-      ++unoccluded;
+      unoccluded_sum += 1.0f;
+    }
+
+    samples_used = sample_index + 1;
+    if (samples_used < clamped_min_sample_count)
+    {
+      continue;
+    }
+
+    if (error_threshold < 0.0f)
+    {
+      continue;
+    }
+
+    const float mean = unoccluded_sum / static_cast<float>(samples_used);
+    const float variance = std::max(0.0f, mean * (1.0f - mean));
+    const float standard_error = std::sqrt(variance / static_cast<float>(samples_used));
+    if (standard_error <= error_threshold)
+    {
+      break;
     }
   }
 
-  return static_cast<float>(unoccluded) / static_cast<float>(sample_count);
+  if (used_sample_count != nullptr)
+  {
+    *used_sample_count = samples_used;
+  }
+
+  return samples_used > 0 ? (unoccluded_sum / static_cast<float>(samples_used)) : 1.0f;
 }
 
 bool compute_barycentric(
@@ -192,6 +226,7 @@ bool bake_ambient_occlusion_texture(
   std::vector<float> coverage_scores(texel_count, -1.0e30f);
   std::vector<std::uint8_t> valid(texel_count, 0u);
   std::vector<int> source_texels(texel_count, -1);
+  std::size_t ao_ray_count = 0;
 
   for (std::size_t triangle_index = 0; triangle_index < uv_mesh.triangles.size(); ++triangle_index)
   {
@@ -261,18 +296,23 @@ bool bake_ambient_occlusion_texture(
           static_cast<std::uint32_t>(x * 1973) ^
           static_cast<std::uint32_t>(y * 9277) ^
           static_cast<std::uint32_t>(triangle_index * 26699));
+        int used_sample_count = 0;
         const float ao = estimate_ambient_occlusion(
           ray_scene,
           position,
           shading_normal,
-          settings.ao_samples,
+          settings.min_ao_samples,
+          settings.max_ao_samples,
+          settings.ao_error_threshold,
           settings.ao_max_distance,
-          texel_seed);
+          texel_seed,
+          &used_sample_count);
 
         ao_values[texel_index] = ao;
         coverage_scores[texel_index] = coverage_score;
         valid[texel_index] = 1u;
         source_texels[texel_index] = static_cast<int>(texel_index);
+        ao_ray_count += static_cast<std::size_t>(std::max(used_sample_count, 0));
       }
     }
   }
@@ -373,6 +413,9 @@ bool bake_ambient_occlusion_texture(
     result->baked_texels = baked_texels;
     result->covered_texels = covered_texels;
     result->dilated_texels = covered_texels >= baked_texels ? (covered_texels - baked_texels) : 0;
+    result->ao_ray_count = ao_ray_count;
+    result->average_ao_samples_per_baked_texel =
+      baked_texels > 0 ? static_cast<float>(ao_ray_count) / static_cast<float>(baked_texels) : 0.0f;
     result->dilation_passes = dilation_pass_count;
   }
 

@@ -91,6 +91,26 @@ The AO sample model matches the debug renderer conceptually:
 
 This is useful because it keeps debug AO and baked AO conceptually aligned during early development.
 
+### Current Adaptive Sampling Policy
+
+The baker now uses adaptive AO sampling per texel.
+
+The current policy is:
+
+- always cast at least `4` rays;
+- estimate AO from those first samples as a Bernoulli mean;
+- estimate the standard error of that mean;
+- stop early when the estimated error falls below a configurable threshold;
+- otherwise continue until the configured maximum sample count is reached.
+
+This gives the baker a cheap early-out on texels that are obviously open or obviously occluded, while still allowing difficult boundary texels to spend more rays.
+
+The default bake profile is:
+
+- minimum samples: `4`
+- maximum samples: `32`
+- error threshold: `0.10`
+
 ---
 
 ## Padding Decision
@@ -159,6 +179,20 @@ If needed later, this can be replaced by:
 - single-channel output;
 - packed material textures;
 - EXR or higher-precision outputs.
+
+### Temporary Preview Material Export
+
+When AO baking is requested together with OBJ export, the tool now also writes a companion `.mtl` file next to the OBJ.
+
+For now this material export is intentionally provisional:
+
+- one material only;
+- the baked AO texture is connected as `map_Kd`;
+- the AO is treated as a temporary diffuse preview.
+
+This is not meant as the final shading model.
+
+It exists so the unwrapped OBJ can be inspected immediately in DCC tools without a separate manual material setup step.
 
 ---
 

@@ -50,7 +50,8 @@ void print_usage()
   std::cout
     << "Usage: sdf_cli [--scene PATH] [--out PATH] [--cell-size VALUE]\n"
     << "               [--unwrap-uvs] [--uv-resolution N] [--uv-padding N]\n"
-    << "               [--bake-ao PATH] [--bake-ao-samples N] [--bake-ao-max-distance F]\n"
+    << "               [--bake-ao PATH] [--bake-ao-samples N] [--bake-ao-min-samples N]\n"
+    << "               [--bake-ao-error-threshold F] [--bake-ao-max-distance F]\n"
     << "               [--bake-ao-dilation N]\n"
     << "               [--debug-render PATH] [--debug-mode depth|normal|ao]\n"
     << "               [--render-width N] [--render-height N]\n"
@@ -145,7 +146,19 @@ int main(int argc, char **argv)
 
     if (argument == "--bake-ao-samples" && index + 1 < argc)
     {
-      bake_settings.ao_samples = std::stoi(argv[++index]);
+      bake_settings.max_ao_samples = std::stoi(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--bake-ao-min-samples" && index + 1 < argc)
+    {
+      bake_settings.min_ao_samples = std::stoi(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--bake-ao-error-threshold" && index + 1 < argc)
+    {
+      bake_settings.ao_error_threshold = std::stof(argv[++index]);
       continue;
     }
 
@@ -226,6 +239,14 @@ int main(int argc, char **argv)
   sdf::UvUnwrapResult unwrap_result;
   const bool needs_uv_unwrap = unwrap_uvs || !bake_ao_path.empty();
 
+  sdf::ObjWriteOptions obj_write_options;
+  obj_write_options.object_name = scene_file.scene.name;
+  if (!bake_ao_path.empty())
+  {
+    obj_write_options.diffuse_texture_path = bake_ao_path;
+  }
+
+  sdf::AoBakeResult bake_result;
   if (needs_uv_unwrap)
   {
     if (!sdf::unwrap_mesh_uvs(build.mesh, unwrap_settings, &export_mesh, &unwrap_result, &error_message))
@@ -236,12 +257,6 @@ int main(int argc, char **argv)
   }
 
   const sdf::RayScene ray_scene = sdf::build_ray_scene(build.mesh);
-
-  if (!sdf::write_obj(export_mesh, output_path, &error_message))
-  {
-    std::cerr << "OBJ export failed: " << error_message << '\n';
-    return 1;
-  }
 
   if (!debug_render_path.empty())
   {
@@ -259,7 +274,6 @@ int main(int argc, char **argv)
     }
   }
 
-  sdf::AoBakeResult bake_result;
   if (!bake_ao_path.empty())
   {
     bake_settings.width = static_cast<int>(unwrap_result.atlas_width);
@@ -277,6 +291,12 @@ int main(int argc, char **argv)
       std::cerr << "AO bake image write failed: " << error_message << '\n';
       return 1;
     }
+  }
+
+  if (!sdf::write_obj(export_mesh, output_path, obj_write_options, &error_message))
+  {
+    std::cerr << "OBJ export failed: " << error_message << '\n';
+    return 1;
   }
 
   std::cout << "Scene file: " << scene_path.string() << '\n';
@@ -309,6 +329,8 @@ int main(int argc, char **argv)
     std::cout << "AO baked texels: " << bake_result.baked_texels << '\n';
     std::cout << "AO dilated texels: " << bake_result.dilated_texels << '\n';
     std::cout << "AO covered texels: " << bake_result.covered_texels << '\n';
+    std::cout << "AO ray count: " << bake_result.ao_ray_count << '\n';
+    std::cout << "AO average samples: " << bake_result.average_ao_samples_per_baked_texel << '\n';
     std::cout << "AO dilation passes: " << bake_result.dilation_passes << '\n';
   }
 

@@ -15,8 +15,10 @@ struct AoBakeSettings
 {
   int width = 0;
   int height = 0;
-  int ao_samples = 8;
+  int min_ao_samples = 4;
+  int max_ao_samples = 32;
   int dilation_passes = -1;
+  float ao_error_threshold = 0.10f;
   float ao_max_distance = 12.0f;
   bool flip_v = true;
   std::uint32_t seed = 1337;
@@ -27,6 +29,8 @@ struct AoBakeResult
   std::size_t baked_texels = 0;
   std::size_t dilated_texels = 0;
   std::size_t covered_texels = 0;
+  std::size_t ao_ray_count = 0;
+  float average_ao_samples_per_baked_texel = 0.0f;
   int dilation_passes = 0;
 };
 
