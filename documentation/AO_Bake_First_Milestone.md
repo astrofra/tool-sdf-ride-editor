@@ -204,6 +204,7 @@ The following remain intentionally deferred:
 - AO supersampling;
 - chart debug images;
 - seam-aware blur or resolve;
+- OpenMP-based parallelization of texel baking loops;
 - source-aware nearest-fill heuristics beyond simple neighborhood propagation;
 - packed bake outputs;
 - bent-normal or curvature baking;

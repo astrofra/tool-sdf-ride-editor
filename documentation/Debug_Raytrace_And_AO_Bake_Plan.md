@@ -299,6 +299,18 @@ The current design decisions are:
 - defer UV-space AO baking until unwrap exists;
 - keep the first camera setup fixed, deterministic, and orthographic.
 
+### Performance Improvement Note
+
+A later performance pass should evaluate **OpenMP** for CPU-side rendering workloads in this repository.
+
+The main candidates are:
+
+- the debug raytracer image loop;
+- AO hemisphere sampling loops;
+- UV-space AO bake texel loops.
+
+This should remain a later optimization pass rather than a prerequisite for functional work, but it is now a recorded target improvement.
+
 ### Current Demo Baseline
 
 The current debug AO demo baseline is:
