@@ -89,8 +89,8 @@ SceneDocument make_frame_006_blockout_scene()
 BuildSettings make_frame_006_build_settings()
 {
   BuildSettings settings;
-  settings.bounds.min = {-36.0f, -4.0f, -16.0f};
-  settings.bounds.max = {42.0f, 42.0f, 96.0f};
+  settings.bounds.min = {-40.0f, -6.0f, -20.0f};
+  settings.bounds.max = {46.0f, 48.0f, 100.0f};
   settings.cell_size = 1.0f;
   return settings;
 }

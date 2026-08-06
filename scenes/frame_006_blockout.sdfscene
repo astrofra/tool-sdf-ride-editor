@@ -8,7 +8,8 @@
 #   box_cut <name> <target_box_name> <tx> <ty> <tz> <hx> <hy> <hz>
 
 scene frame_006_blockout
-bounds -36 -4 -16 42 42 96
+# Padded to keep the tallest/rightmost masses and their modifiers away from the SDF clip boundary.
+bounds -40 -6 -20 46 48 100
 cell_size 1.0
 
 box add ground_slab 0 -2 40 32 2 52
