@@ -1,6 +1,7 @@
 #include "sdf/generator.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -19,33 +20,180 @@ struct GridDimensions
   int nz = 0;
 };
 
+struct SurfaceVertex
+{
+  Vec3 position;
+  Vec3 normal;
+};
+
+constexpr std::array<std::array<int, 4>, 6> kCubeTetrahedra = {{
+  {{0, 5, 1, 6}},
+  {{0, 1, 2, 6}},
+  {{0, 2, 3, 6}},
+  {{0, 3, 7, 6}},
+  {{0, 7, 4, 6}},
+  {{0, 4, 5, 6}}
+}};
+
 std::size_t grid_index(const GridDimensions &dims, int x, int y, int z)
 {
   return static_cast<std::size_t>((z * dims.ny + y) * dims.nx + x);
 }
 
-void append_face(
-  Mesh &mesh,
-  const Vec3 &v0,
-  const Vec3 &v1,
-  const Vec3 &v2,
-  const Vec3 &v3,
-  const Vec3 &normal)
+Vec2 compute_default_uv(const Vec3 &position, const Vec3 &normal)
 {
-  const std::uint32_t base = static_cast<std::uint32_t>(mesh.vertices.size());
+  const Vec3 abs_normal = abs_components(normal);
+  const float scale = 0.1f;
 
-  mesh.vertices.push_back({v0, normal, {0.0f, 0.0f}});
-  mesh.vertices.push_back({v1, normal, {1.0f, 0.0f}});
-  mesh.vertices.push_back({v2, normal, {1.0f, 1.0f}});
-  mesh.vertices.push_back({v3, normal, {0.0f, 1.0f}});
+  if (abs_normal.y >= abs_normal.x && abs_normal.y >= abs_normal.z)
+  {
+    return {position.x * scale, position.z * scale};
+  }
 
-  mesh.triangles.push_back({base + 0, base + 1, base + 2, 0});
-  mesh.triangles.push_back({base + 0, base + 2, base + 3, 0});
+  if (abs_normal.x >= abs_normal.y && abs_normal.x >= abs_normal.z)
+  {
+    return {position.z * scale, position.y * scale};
+  }
+
+  return {position.x * scale, position.y * scale};
 }
 
-bool is_inside_grid(const GridDimensions &dims, int x, int y, int z)
+Vec3 estimate_surface_normal(const SceneDocument &scene, const Vec3 &point, float epsilon)
 {
-  return x >= 0 && x < dims.nx && y >= 0 && y < dims.ny && z >= 0 && z < dims.nz;
+  const Vec3 gradient = {
+    evaluate_scene_sdf(scene, {point.x + epsilon, point.y, point.z}) -
+      evaluate_scene_sdf(scene, {point.x - epsilon, point.y, point.z}),
+    evaluate_scene_sdf(scene, {point.x, point.y + epsilon, point.z}) -
+      evaluate_scene_sdf(scene, {point.x, point.y - epsilon, point.z}),
+    evaluate_scene_sdf(scene, {point.x, point.y, point.z + epsilon}) -
+      evaluate_scene_sdf(scene, {point.x, point.y, point.z - epsilon})
+  };
+
+  return normalized(gradient);
+}
+
+SurfaceVertex interpolate_surface_vertex(
+  const SceneDocument &scene,
+  const Vec3 &point_a,
+  float value_a,
+  const Vec3 &point_b,
+  float value_b,
+  float gradient_epsilon)
+{
+  const float denominator = value_a - value_b;
+  const float raw_t = std::fabs(denominator) > 1.0e-8f ? value_a / denominator : 0.5f;
+  const float t = std::clamp(raw_t, 0.0f, 1.0f);
+  const Vec3 position = point_a + (point_b - point_a) * t;
+
+  SurfaceVertex vertex;
+  vertex.position = position;
+  vertex.normal = estimate_surface_normal(scene, position, gradient_epsilon);
+  return vertex;
+}
+
+void append_triangle(Mesh &mesh, SurfaceVertex v0, SurfaceVertex v1, SurfaceVertex v2)
+{
+  const Vec3 face_normal = cross(v1.position - v0.position, v2.position - v0.position);
+  const Vec3 average_normal = normalized(v0.normal + v1.normal + v2.normal);
+
+  if (dot(face_normal, average_normal) < 0.0f)
+  {
+    std::swap(v1, v2);
+  }
+
+  const std::uint32_t base = static_cast<std::uint32_t>(mesh.vertices.size());
+
+  mesh.vertices.push_back({v0.position, v0.normal, compute_default_uv(v0.position, v0.normal)});
+  mesh.vertices.push_back({v1.position, v1.normal, compute_default_uv(v1.position, v1.normal)});
+  mesh.vertices.push_back({v2.position, v2.normal, compute_default_uv(v2.position, v2.normal)});
+
+  mesh.triangles.push_back({base + 0, base + 1, base + 2, 0});
+}
+
+void polygonize_tetrahedron(
+  const SceneDocument &scene,
+  const std::array<Vec3, 4> &points,
+  const std::array<float, 4> &values,
+  float gradient_epsilon,
+  Mesh &mesh)
+{
+  std::array<int, 4> inside_indices = {};
+  std::array<int, 4> outside_indices = {};
+  int inside_count = 0;
+  int outside_count = 0;
+
+  for (int index = 0; index < 4; ++index)
+  {
+    if (values[index] <= 0.0f)
+    {
+      inside_indices[inside_count++] = index;
+    }
+    else
+    {
+      outside_indices[outside_count++] = index;
+    }
+  }
+
+  if (inside_count == 0 || inside_count == 4)
+  {
+    return;
+  }
+
+  if (inside_count == 1)
+  {
+    const int inside = inside_indices[0];
+
+    append_triangle(
+      mesh,
+      interpolate_surface_vertex(scene, points[inside], values[inside], points[outside_indices[0]], values[outside_indices[0]], gradient_epsilon),
+      interpolate_surface_vertex(scene, points[inside], values[inside], points[outside_indices[1]], values[outside_indices[1]], gradient_epsilon),
+      interpolate_surface_vertex(scene, points[inside], values[inside], points[outside_indices[2]], values[outside_indices[2]], gradient_epsilon));
+    return;
+  }
+
+  if (inside_count == 3)
+  {
+    const int outside = outside_indices[0];
+
+    append_triangle(
+      mesh,
+      interpolate_surface_vertex(scene, points[outside], values[outside], points[inside_indices[0]], values[inside_indices[0]], gradient_epsilon),
+      interpolate_surface_vertex(scene, points[outside], values[outside], points[inside_indices[1]], values[inside_indices[1]], gradient_epsilon),
+      interpolate_surface_vertex(scene, points[outside], values[outside], points[inside_indices[2]], values[inside_indices[2]], gradient_epsilon));
+    return;
+  }
+
+  const SurfaceVertex v0 = interpolate_surface_vertex(
+    scene,
+    points[inside_indices[0]],
+    values[inside_indices[0]],
+    points[outside_indices[0]],
+    values[outside_indices[0]],
+    gradient_epsilon);
+  const SurfaceVertex v1 = interpolate_surface_vertex(
+    scene,
+    points[inside_indices[0]],
+    values[inside_indices[0]],
+    points[outside_indices[1]],
+    values[outside_indices[1]],
+    gradient_epsilon);
+  const SurfaceVertex v2 = interpolate_surface_vertex(
+    scene,
+    points[inside_indices[1]],
+    values[inside_indices[1]],
+    points[outside_indices[0]],
+    values[outside_indices[0]],
+    gradient_epsilon);
+  const SurfaceVertex v3 = interpolate_surface_vertex(
+    scene,
+    points[inside_indices[1]],
+    values[inside_indices[1]],
+    points[outside_indices[1]],
+    values[outside_indices[1]],
+    gradient_epsilon);
+
+  append_triangle(mesh, v0, v1, v3);
+  append_triangle(mesh, v0, v3, v2);
 }
 
 }  // namespace
@@ -98,15 +246,14 @@ SceneBuildResult build_scene_mesh(const SceneDocument &scene, const BuildSetting
   }
 
   const Vec3 span = settings.bounds.max - settings.bounds.min;
-  const GridDimensions dims = {
+  const GridDimensions cell_dims = {
     std::max(1, static_cast<int>(std::ceil(span.x / settings.cell_size))),
     std::max(1, static_cast<int>(std::ceil(span.y / settings.cell_size))),
     std::max(1, static_cast<int>(std::ceil(span.z / settings.cell_size)))
   };
+  const GridDimensions point_dims = {cell_dims.nx + 1, cell_dims.ny + 1, cell_dims.nz + 1};
 
-  std::vector<std::uint8_t> occupancy(static_cast<std::size_t>(dims.nx) * dims.ny * dims.nz, 0);
-
-  auto cell_min = [&](int x, int y, int z) -> Vec3
+  auto grid_point_position = [&](int x, int y, int z) -> Vec3
   {
     return {
       settings.bounds.min.x + static_cast<float>(x) * settings.cell_size,
@@ -115,128 +262,97 @@ SceneBuildResult build_scene_mesh(const SceneDocument &scene, const BuildSetting
     };
   };
 
-  auto cell_center = [&](int x, int y, int z) -> Vec3
-  {
-    const float half_cell = settings.cell_size * 0.5f;
-    const Vec3 min_corner = cell_min(x, y, z);
-    return {
-      min_corner.x + half_cell,
-      min_corner.y + half_cell,
-      min_corner.z + half_cell
-    };
-  };
+  std::vector<float> sdf_samples(static_cast<std::size_t>(point_dims.nx) * point_dims.ny * point_dims.nz, 0.0f);
 
-  SceneBuildResult result;
-  result.sampled_cells = occupancy.size();
-
-  for (int z = 0; z < dims.nz; ++z)
+  for (int z = 0; z < point_dims.nz; ++z)
   {
-    for (int y = 0; y < dims.ny; ++y)
+    for (int y = 0; y < point_dims.ny; ++y)
     {
-      for (int x = 0; x < dims.nx; ++x)
+      for (int x = 0; x < point_dims.nx; ++x)
       {
-        if (evaluate_scene_sdf(scene, cell_center(x, y, z)) <= 0.0f)
-        {
-          occupancy[grid_index(dims, x, y, z)] = 1;
-          ++result.occupied_cells;
-        }
+        sdf_samples[grid_index(point_dims, x, y, z)] = evaluate_scene_sdf(scene, grid_point_position(x, y, z));
       }
     }
   }
 
-  auto is_occupied = [&](int x, int y, int z) -> bool
+  auto sample_value = [&](int x, int y, int z) -> float
   {
-    if (!is_inside_grid(dims, x, y, z))
-    {
-      return false;
-    }
-
-    return occupancy[grid_index(dims, x, y, z)] != 0;
+    return sdf_samples[grid_index(point_dims, x, y, z)];
   };
 
-  for (int z = 0; z < dims.nz; ++z)
+  SceneBuildResult result;
+  result.sampled_cells = static_cast<std::size_t>(cell_dims.nx) * cell_dims.ny * cell_dims.nz;
+
+  const float half_cell = settings.cell_size * 0.5f;
+  const float gradient_epsilon = std::max(settings.cell_size * 0.25f, 1.0e-3f);
+
+  for (int z = 0; z < cell_dims.nz; ++z)
   {
-    for (int y = 0; y < dims.ny; ++y)
+    for (int y = 0; y < cell_dims.ny; ++y)
     {
-      for (int x = 0; x < dims.nx; ++x)
+      for (int x = 0; x < cell_dims.nx; ++x)
       {
-        if (!is_occupied(x, y, z))
+        const std::array<Vec3, 8> cube_points = {{
+          grid_point_position(x + 0, y + 0, z + 0),
+          grid_point_position(x + 1, y + 0, z + 0),
+          grid_point_position(x + 1, y + 1, z + 0),
+          grid_point_position(x + 0, y + 1, z + 0),
+          grid_point_position(x + 0, y + 0, z + 1),
+          grid_point_position(x + 1, y + 0, z + 1),
+          grid_point_position(x + 1, y + 1, z + 1),
+          grid_point_position(x + 0, y + 1, z + 1)
+        }};
+        const std::array<float, 8> cube_values = {{
+          sample_value(x + 0, y + 0, z + 0),
+          sample_value(x + 1, y + 0, z + 0),
+          sample_value(x + 1, y + 1, z + 0),
+          sample_value(x + 0, y + 1, z + 0),
+          sample_value(x + 0, y + 0, z + 1),
+          sample_value(x + 1, y + 0, z + 1),
+          sample_value(x + 1, y + 1, z + 1),
+          sample_value(x + 0, y + 1, z + 1)
+        }};
+
+        const Vec3 cell_min = cube_points[0];
+        const Vec3 center = {cell_min.x + half_cell, cell_min.y + half_cell, cell_min.z + half_cell};
+        if (evaluate_scene_sdf(scene, center) <= 0.0f)
+        {
+          ++result.occupied_cells;
+        }
+
+        bool has_inside = false;
+        bool has_outside = false;
+        for (float value : cube_values)
+        {
+          has_inside = has_inside || value <= 0.0f;
+          has_outside = has_outside || value > 0.0f;
+        }
+
+        if (!(has_inside && has_outside))
         {
           continue;
         }
 
-        const Vec3 min_corner = cell_min(x, y, z);
-        const float x0 = min_corner.x;
-        const float y0 = min_corner.y;
-        const float z0 = min_corner.z;
-        const float x1 = x0 + settings.cell_size;
-        const float y1 = y0 + settings.cell_size;
-        const float z1 = z0 + settings.cell_size;
-
-        if (!is_occupied(x + 1, y, z))
+        // Splitting each cube into six tetrahedra keeps the implementation small
+        // while replacing the blocky voxel shell with interpolated isosurface triangles.
+        for (const std::array<int, 4> &tetrahedron : kCubeTetrahedra)
         {
-          append_face(
-            result.mesh,
-            {x1, y0, z0},
-            {x1, y1, z0},
-            {x1, y1, z1},
-            {x1, y0, z1},
-            {1.0f, 0.0f, 0.0f});
-        }
-
-        if (!is_occupied(x - 1, y, z))
-        {
-          append_face(
-            result.mesh,
-            {x0, y0, z1},
-            {x0, y1, z1},
-            {x0, y1, z0},
-            {x0, y0, z0},
-            {-1.0f, 0.0f, 0.0f});
-        }
-
-        if (!is_occupied(x, y + 1, z))
-        {
-          append_face(
-            result.mesh,
-            {x0, y1, z1},
-            {x1, y1, z1},
-            {x1, y1, z0},
-            {x0, y1, z0},
-            {0.0f, 1.0f, 0.0f});
-        }
-
-        if (!is_occupied(x, y - 1, z))
-        {
-          append_face(
-            result.mesh,
-            {x0, y0, z0},
-            {x1, y0, z0},
-            {x1, y0, z1},
-            {x0, y0, z1},
-            {0.0f, -1.0f, 0.0f});
-        }
-
-        if (!is_occupied(x, y, z + 1))
-        {
-          append_face(
-            result.mesh,
-            {x0, y0, z1},
-            {x1, y0, z1},
-            {x1, y1, z1},
-            {x0, y1, z1},
-            {0.0f, 0.0f, 1.0f});
-        }
-
-        if (!is_occupied(x, y, z - 1))
-        {
-          append_face(
-            result.mesh,
-            {x1, y0, z0},
-            {x0, y0, z0},
-            {x0, y1, z0},
-            {x1, y1, z0},
-            {0.0f, 0.0f, -1.0f});
+          polygonize_tetrahedron(
+            scene,
+            {
+              cube_points[tetrahedron[0]],
+              cube_points[tetrahedron[1]],
+              cube_points[tetrahedron[2]],
+              cube_points[tetrahedron[3]]
+            },
+            {
+              cube_values[tetrahedron[0]],
+              cube_values[tetrahedron[1]],
+              cube_values[tetrahedron[2]],
+              cube_values[tetrahedron[3]]
+            },
+            gradient_epsilon,
+            result.mesh);
         }
       }
     }
@@ -246,4 +362,3 @@ SceneBuildResult build_scene_mesh(const SceneDocument &scene, const BuildSetting
 }
 
 }  // namespace sdf
-

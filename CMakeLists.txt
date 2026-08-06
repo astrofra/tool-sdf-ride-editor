@@ -20,6 +20,7 @@ add_library(sdf_core
   src/sdf_core/src/generator.cpp
   src/sdf_core/src/obj_writer.cpp
   src/sdf_core/src/scene.cpp
+  src/sdf_core/src/scene_io.cpp
 )
 
 target_include_directories(sdf_core
@@ -41,6 +42,7 @@ add_executable(sdf_cli
 )
 
 target_link_libraries(sdf_cli PRIVATE sdf_core)
+target_compile_definitions(sdf_cli PRIVATE SDF_PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 set_target_properties(sdf_cli PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -56,6 +58,7 @@ if(SDF_BUILD_TESTS)
   )
 
   target_link_libraries(sdf_tests PRIVATE sdf_core)
+  target_compile_definitions(sdf_tests PRIVATE SDF_PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
   set_target_properties(sdf_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
@@ -65,4 +68,3 @@ if(SDF_BUILD_TESTS)
 
   add_test(NAME sdf_tests COMMAND sdf_tests)
 endif()
-

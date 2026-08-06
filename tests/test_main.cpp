@@ -8,9 +8,14 @@
 #include "sdf/generator.h"
 #include "sdf/obj_writer.h"
 #include "sdf/scene.h"
+#include "sdf/scene_io.h"
 
 namespace
 {
+
+#ifndef SDF_PROJECT_SOURCE_DIR
+#define SDF_PROJECT_SOURCE_DIR "."
+#endif
 
 void expect_true(bool condition, const std::string &message)
 {
@@ -20,20 +25,57 @@ void expect_true(bool condition, const std::string &message)
   }
 }
 
+std::filesystem::path sample_scene_path()
+{
+  return std::filesystem::path(SDF_PROJECT_SOURCE_DIR) / "scenes" / "frame_006_blockout.sdfscene";
+}
+
+void expect_same_box(const sdf::SdfBox &lhs, const sdf::SdfBox &rhs)
+{
+  expect_true(lhs.name == rhs.name, "box names should match");
+  expect_true(lhs.op == rhs.op, "box operations should match");
+  expect_true(lhs.material_id == rhs.material_id, "box material ids should match");
+  expect_true(lhs.transform.translation.x == rhs.transform.translation.x, "box translation x should match");
+  expect_true(lhs.transform.translation.y == rhs.transform.translation.y, "box translation y should match");
+  expect_true(lhs.transform.translation.z == rhs.transform.translation.z, "box translation z should match");
+  expect_true(lhs.half_size.x == rhs.half_size.x, "box half_size x should match");
+  expect_true(lhs.half_size.y == rhs.half_size.y, "box half_size y should match");
+  expect_true(lhs.half_size.z == rhs.half_size.z, "box half_size z should match");
+}
+
 void test_frame_scene_layout()
 {
-  const sdf::SceneDocument scene = sdf::make_frame_006_blockout_scene();
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
 
-  expect_true(scene.name == "frame_006_blockout", "scene should keep a stable blockout name");
-  expect_true(scene.boxes.size() == 14, "frame_006 blockout should contain 14 boxes in the initial slice");
+  expect_true(ok, "sample scene file should load");
+
+  const sdf::SceneDocument expected_scene = sdf::make_frame_006_blockout_scene();
+  const sdf::BuildSettings expected_settings = sdf::make_frame_006_build_settings();
+
+  expect_true(scene_file.scene.name == expected_scene.name, "scene should keep a stable blockout name");
+  expect_true(scene_file.scene.boxes.size() == expected_scene.boxes.size(), "scene file should keep the expected box count");
+  expect_true(scene_file.build_settings.cell_size == expected_settings.cell_size, "scene file should keep the expected default cell size");
+  expect_true(scene_file.build_settings.bounds.min.x == expected_settings.bounds.min.x, "scene bounds min x should match");
+  expect_true(scene_file.build_settings.bounds.max.z == expected_settings.bounds.max.z, "scene bounds max z should match");
+
+  for (std::size_t index = 0; index < expected_scene.boxes.size(); ++index)
+  {
+    expect_same_box(scene_file.scene.boxes[index], expected_scene.boxes[index]);
+  }
 }
 
 void test_csg_opening_flips_the_sign()
 {
-  const sdf::SceneDocument scene = sdf::make_frame_006_blockout_scene();
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
 
-  const float tower_mass = sdf::evaluate_scene_sdf(scene, {-18.0f, 10.0f, 18.0f});
-  const float opening_center = sdf::evaluate_scene_sdf(scene, {-18.0f, 20.0f, 18.0f});
+  expect_true(ok, "sample scene file should load");
+
+  const float tower_mass = sdf::evaluate_scene_sdf(scene_file.scene, {-18.0f, 10.0f, 18.0f});
+  const float opening_center = sdf::evaluate_scene_sdf(scene_file.scene, {-18.0f, 20.0f, 18.0f});
 
   expect_true(tower_mass < 0.0f, "left tower body should remain inside the solid");
   expect_true(opening_center > 0.0f, "subtractive opening should carve a positive pocket");
@@ -41,30 +83,52 @@ void test_csg_opening_flips_the_sign()
 
 void test_mesh_generation_produces_triangles()
 {
-  const sdf::SceneDocument scene = sdf::make_frame_006_blockout_scene();
-  sdf::BuildSettings settings = sdf::make_frame_006_build_settings();
-  settings.cell_size = 2.0f;
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
 
-  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene, settings);
+  expect_true(ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 2.0f;
+
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
 
   expect_true(build.sampled_cells > 0, "mesh build should sample at least one cell");
   expect_true(build.occupied_cells > 0, "mesh build should mark occupied voxels");
   expect_true(!build.mesh.vertices.empty(), "mesh build should emit vertices");
   expect_true(!build.mesh.triangles.empty(), "mesh build should emit triangles");
-  expect_true((build.mesh.vertices.size() % 4) == 0, "voxel face emission should append four vertices per face");
-  expect_true((build.mesh.triangles.size() % 2) == 0, "voxel face emission should append two triangles per face");
+  expect_true(build.mesh.vertices.size() == build.mesh.triangles.size() * 3, "triangle emission should append three vertices per triangle");
+
+  for (const sdf::MeshTriangle &triangle : build.mesh.triangles)
+  {
+    expect_true(triangle.i0 < build.mesh.vertices.size(), "triangle i0 should stay within the vertex buffer");
+    expect_true(triangle.i1 < build.mesh.vertices.size(), "triangle i1 should stay within the vertex buffer");
+    expect_true(triangle.i2 < build.mesh.vertices.size(), "triangle i2 should stay within the vertex buffer");
+  }
+
+  for (const sdf::MeshVertex &vertex : build.mesh.vertices)
+  {
+    const float normal_length = std::sqrt(
+      vertex.normal.x * vertex.normal.x +
+      vertex.normal.y * vertex.normal.y +
+      vertex.normal.z * vertex.normal.z);
+    expect_true(normal_length > 0.5f && normal_length < 1.5f, "surface normals should stay normalized");
+  }
 }
 
 void test_obj_writer_emits_a_file()
 {
-  const sdf::SceneDocument scene = sdf::make_frame_006_blockout_scene();
-  sdf::BuildSettings settings = sdf::make_frame_006_build_settings();
-  settings.cell_size = 3.0f;
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
 
-  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene, settings);
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 3.0f;
+
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
   const std::filesystem::path output_path = std::filesystem::current_path() / "test_output" / "frame_006_blockout.obj";
 
-  std::string error_message;
   const bool ok = sdf::write_obj(build.mesh, output_path, &error_message);
 
   expect_true(ok, "obj export should succeed");
@@ -77,6 +141,26 @@ void test_obj_writer_emits_a_file()
   expect_true(first_line == "# Generated by sdf_cli", "obj file should start with the generator banner");
 }
 
+void test_invalid_scene_file_reports_an_error()
+{
+  const std::filesystem::path invalid_path = std::filesystem::current_path() / "test_output" / "invalid_scene.sdfscene";
+  std::filesystem::create_directories(invalid_path.parent_path());
+
+  {
+    std::ofstream stream(invalid_path);
+    stream << "scene broken\n";
+    stream << "cell_size 1.0\n";
+    stream << "box add orphan 0 0 0 1 1 1\n";
+  }
+
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool ok = sdf::load_scene_file(invalid_path, &scene_file, &error_message);
+
+  expect_true(!ok, "invalid scene file should be rejected");
+  expect_true(error_message.find("bounds") != std::string::npos, "invalid scene file error should mention missing bounds");
+}
+
 }  // namespace
 
 int main()
@@ -87,6 +171,7 @@ int main()
     test_csg_opening_flips_the_sign();
     test_mesh_generation_produces_triangles();
     test_obj_writer_emits_a_file();
+    test_invalid_scene_file_reports_an_error();
   }
   catch (const std::exception &exception)
   {

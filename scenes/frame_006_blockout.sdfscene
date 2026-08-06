@@ -1,0 +1,25 @@
+# Minimal line-based scene format for the first native slice.
+# Syntax:
+#   scene <name>
+#   bounds <minx> <miny> <minz> <maxx> <maxy> <maxz>
+#   cell_size <value>
+#   box <add|subtract> <name> <tx> <ty> <tz> <hx> <hy> <hz> [material_id]
+
+scene frame_006_blockout
+bounds -36 -4 -16 42 42 96
+cell_size 1.0
+
+box add ground_slab 0 -2 40 32 2 52
+box add left_tower -18 18 18 7 18 7
+box add left_catwalk_mass -13 30 18 4 2 4
+box add right_tower 21 22 15 10 22 12
+box add right_wall 28 8 38 14 8 30
+box add central_rear_mass 0 14 56 6 14 10
+box add left_background_mass -8 10 40 4 10 8
+box add center_plinth 0 3 26 3 3 3
+box add right_plinth 10 2 24 2 2 2
+box add left_marker_head -20 7 8 2.5 3 2.5
+box add left_marker_stem -20 2 8 1 2 1
+box add debris_slab -8 1 20 2 1 2
+box subtract left_tower_opening -18 20 18 2 4 2
+box subtract right_tower_opening 16 20 13 1.5 4 1.5
