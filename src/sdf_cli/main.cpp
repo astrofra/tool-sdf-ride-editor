@@ -3,6 +3,7 @@
 #include <iostream>
 #include <string>
 
+#include "sdf/bake_ao.h"
 #include "sdf/debug_render.h"
 #include "sdf/generator.h"
 #include "sdf/image_write.h"
@@ -49,6 +50,8 @@ void print_usage()
   std::cout
     << "Usage: sdf_cli [--scene PATH] [--out PATH] [--cell-size VALUE]\n"
     << "               [--unwrap-uvs] [--uv-resolution N] [--uv-padding N]\n"
+    << "               [--bake-ao PATH] [--bake-ao-samples N] [--bake-ao-max-distance F]\n"
+    << "               [--bake-ao-dilation N]\n"
     << "               [--debug-render PATH] [--debug-mode depth|normal|ao]\n"
     << "               [--render-width N] [--render-height N]\n"
     << "               [--camera-front | --camera-left-3q | --camera-right-3q]\n"
@@ -62,11 +65,13 @@ int main(int argc, char **argv)
   std::filesystem::path scene_path = default_scene_path();
   std::filesystem::path output_path = "artifacts/generated/frame_006_blockout.obj";
   std::filesystem::path debug_render_path;
+  std::filesystem::path bake_ao_path;
   bool has_cell_size_override = false;
   float cell_size_override = 0.0f;
   bool unwrap_uvs = false;
   sdf::DebugRenderSettings debug_settings;
   sdf::UvUnwrapSettings unwrap_settings;
+  sdf::AoBakeSettings bake_settings;
 
   for (int index = 1; index < argc; ++index)
   {
@@ -87,6 +92,12 @@ int main(int argc, char **argv)
     if (argument == "--debug-render" && index + 1 < argc)
     {
       debug_render_path = argv[++index];
+      continue;
+    }
+
+    if (argument == "--bake-ao" && index + 1 < argc)
+    {
+      bake_ao_path = argv[++index];
       continue;
     }
 
@@ -129,6 +140,24 @@ int main(int argc, char **argv)
     if (argument == "--uv-padding" && index + 1 < argc)
     {
       unwrap_settings.padding = static_cast<std::uint32_t>(std::stoul(argv[++index]));
+      continue;
+    }
+
+    if (argument == "--bake-ao-samples" && index + 1 < argc)
+    {
+      bake_settings.ao_samples = std::stoi(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--bake-ao-max-distance" && index + 1 < argc)
+    {
+      bake_settings.ao_max_distance = std::stof(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--bake-ao-dilation" && index + 1 < argc)
+    {
+      bake_settings.dilation_passes = std::stoi(argv[++index]);
       continue;
     }
 
@@ -195,8 +224,9 @@ int main(int argc, char **argv)
   const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
   sdf::Mesh export_mesh = build.mesh;
   sdf::UvUnwrapResult unwrap_result;
+  const bool needs_uv_unwrap = unwrap_uvs || !bake_ao_path.empty();
 
-  if (unwrap_uvs)
+  if (needs_uv_unwrap)
   {
     if (!sdf::unwrap_mesh_uvs(build.mesh, unwrap_settings, &export_mesh, &unwrap_result, &error_message))
     {
@@ -229,6 +259,29 @@ int main(int argc, char **argv)
     }
   }
 
+  sdf::AoBakeResult bake_result;
+  if (!bake_ao_path.empty())
+  {
+    bake_settings.width = static_cast<int>(unwrap_result.atlas_width);
+    bake_settings.height = static_cast<int>(unwrap_result.atlas_height);
+    bake_settings.dilation_passes = std::max(
+      bake_settings.dilation_passes,
+      static_cast<int>(unwrap_settings.padding));
+
+    sdf::Rgb8Image image;
+    if (!sdf::bake_ambient_occlusion_texture(export_mesh, ray_scene, bake_settings, &image, &bake_result, &error_message))
+    {
+      std::cerr << "AO bake failed: " << error_message << '\n';
+      return 1;
+    }
+
+    if (!sdf::write_png_rgb8(image, bake_ao_path, &error_message))
+    {
+      std::cerr << "AO bake image write failed: " << error_message << '\n';
+      return 1;
+    }
+  }
+
   std::cout << "Scene file: " << scene_path.string() << '\n';
   std::cout << "Scene: " << scene_file.scene.name << '\n';
   std::cout << "Boxes: " << scene_file.scene.boxes.size() << '\n';
@@ -239,7 +292,7 @@ int main(int argc, char **argv)
   std::cout << "Generated triangles: " << build.mesh.triangles.size() << '\n';
   std::cout << "Export vertices: " << export_mesh.vertices.size() << '\n';
   std::cout << "Export triangles: " << export_mesh.triangles.size() << '\n';
-  if (unwrap_uvs)
+  if (needs_uv_unwrap)
   {
     std::cout << "UV unwrap: enabled\n";
     std::cout << "UV charts: " << unwrap_result.chart_count << '\n';
@@ -252,6 +305,13 @@ int main(int argc, char **argv)
   if (!debug_render_path.empty())
   {
     std::cout << "Debug image: " << debug_render_path.string() << '\n';
+  }
+  if (!bake_ao_path.empty())
+  {
+    std::cout << "AO bake: " << bake_ao_path.string() << '\n';
+    std::cout << "AO baked texels: " << bake_result.baked_texels << '\n';
+    std::cout << "AO dilated texels: " << bake_result.dilated_texels << '\n';
+    std::cout << "AO covered texels: " << bake_result.covered_texels << '\n';
   }
 
   return 0;

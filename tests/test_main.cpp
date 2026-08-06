@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "sdf/bake_ao.h"
 #include "sdf/debug_render.h"
 #include "sdf/generator.h"
 #include "sdf/image_write.h"
@@ -327,6 +328,66 @@ void test_uv_unwrap_generates_normalized_uvs()
   }
 }
 
+void test_ao_bake_writes_png()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 8.0f;
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  sdf::UvUnwrapSettings unwrap_settings;
+  unwrap_settings.resolution = 128;
+  unwrap_settings.padding = 4;
+
+  sdf::Mesh unwrapped_mesh;
+  sdf::UvUnwrapResult unwrap_result;
+  const bool unwrap_ok = sdf::unwrap_mesh_uvs(build.mesh, unwrap_settings, &unwrapped_mesh, &unwrap_result, &error_message);
+  expect_true(unwrap_ok, "uv unwrap should succeed before ao baking");
+
+  const sdf::RayScene ray_scene = sdf::build_ray_scene(build.mesh);
+
+  sdf::AoBakeSettings bake_settings;
+  bake_settings.width = static_cast<int>(unwrap_result.atlas_width);
+  bake_settings.height = static_cast<int>(unwrap_result.atlas_height);
+  bake_settings.ao_samples = 2;
+  bake_settings.ao_max_distance = 8.0f;
+  bake_settings.dilation_passes = 2;
+  bake_settings.seed = 123;
+
+  sdf::Rgb8Image image;
+  sdf::AoBakeResult bake_result;
+  const bool bake_ok = sdf::bake_ambient_occlusion_texture(
+    unwrapped_mesh,
+    ray_scene,
+    bake_settings,
+    &image,
+    &bake_result,
+    &error_message);
+
+  expect_true(bake_ok, "ao bake should succeed");
+  expect_true(image.width == bake_settings.width, "ao bake should preserve bake width");
+  expect_true(image.height == bake_settings.height, "ao bake should preserve bake height");
+  expect_true(bake_result.baked_texels > 0, "ao bake should cover at least one texel");
+  expect_true(bake_result.covered_texels >= bake_result.baked_texels, "dilation should never reduce texel coverage");
+
+  std::size_t non_black_pixels = 0;
+  for (unsigned char value : image.pixels)
+  {
+    non_black_pixels += value != 0 ? 1u : 0u;
+  }
+  expect_true(non_black_pixels > 0, "ao bake should produce non-black pixels");
+
+  const std::filesystem::path output_path = std::filesystem::current_path() / "test_output" / "frame_006_bake_ao.png";
+  const bool write_ok = sdf::write_png_rgb8(image, output_path, &error_message);
+  expect_true(write_ok, "ao bake PNG write should succeed");
+  expect_true(std::filesystem::exists(output_path), "ao bake should produce a PNG file");
+  expect_true(std::filesystem::file_size(output_path) > 0, "ao bake PNG output should not be empty");
+}
+
 void test_invalid_scene_file_reports_an_error()
 {
   const std::filesystem::path invalid_path = std::filesystem::current_path() / "test_output" / "invalid_scene_missing_bounds.sdfscene";
@@ -383,6 +444,7 @@ int main()
     test_ray_scene_intersection_on_generated_mesh();
     test_debug_render_writes_png();
     test_uv_unwrap_generates_normalized_uvs();
+    test_ao_bake_writes_png();
     test_invalid_scene_file_reports_an_error();
     test_invalid_modifier_target_reports_an_error();
   }
