@@ -12,10 +12,10 @@ if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
   --out "%~dp0artifacts\generated\frame_006_blockout.obj" ^
   --debug-render "%~dp0artifacts\generated\frame_006_debug_ao.png" ^
   --debug-mode ao ^
-  --render-width 320 ^
-  --render-height 180 ^
+  --render-width 640 ^
+  --render-height 360 ^
   --camera-front ^
-  --ao-samples 8 ^
+  --ao-samples 16 ^
   --ao-max-distance 10.0
 if errorlevel 1 goto :fail
 
@@ -26,4 +26,3 @@ exit /b 0
 set ERR=%errorlevel%
 popd
 exit /b %ERR%
-

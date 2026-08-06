@@ -298,3 +298,16 @@ The current design decisions are:
 - build the **debug renderer first**;
 - defer UV-space AO baking until unwrap exists;
 - keep the first camera setup fixed, deterministic, and orthographic.
+
+### Current Demo Baseline
+
+The current debug AO demo baseline is:
+
+- output resolution `640x360`;
+- `16` AO samples per pixel;
+- fixed front orthographic camera.
+
+This is a deliberate balance for now:
+
+- high enough to make silhouette and AO behavior easier to inspect;
+- still cheap enough for quick iteration during mesh-generation work.
