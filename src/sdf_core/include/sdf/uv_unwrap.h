@@ -14,8 +14,15 @@ struct UvUnwrapSettings
   std::uint32_t resolution = 1024;
   std::uint32_t padding = 4;
   std::uint32_t max_chart_size = 0;
+  std::uint32_t chart_max_iterations = 4;
   float texels_per_unit = 0.0f;
   float epsilon = 1.0e-5f;
+  float chart_max_cost = 8.0f;
+  float normal_deviation_weight = 1.0f;
+  float roundness_weight = 0.001f;
+  float straightness_weight = 1.0f;
+  float normal_seam_weight = 0.5f;
+  float texture_seam_weight = 0.0f;
   bool brute_force = false;
   bool bilinear = true;
   bool block_align = true;

@@ -264,9 +264,6 @@ int main(int argc, char **argv)
   {
     bake_settings.width = static_cast<int>(unwrap_result.atlas_width);
     bake_settings.height = static_cast<int>(unwrap_result.atlas_height);
-    bake_settings.dilation_passes = std::max(
-      bake_settings.dilation_passes,
-      static_cast<int>(unwrap_settings.padding));
 
     sdf::Rgb8Image image;
     if (!sdf::bake_ambient_occlusion_texture(export_mesh, ray_scene, bake_settings, &image, &bake_result, &error_message))
@@ -312,6 +309,7 @@ int main(int argc, char **argv)
     std::cout << "AO baked texels: " << bake_result.baked_texels << '\n';
     std::cout << "AO dilated texels: " << bake_result.dilated_texels << '\n';
     std::cout << "AO covered texels: " << bake_result.covered_texels << '\n';
+    std::cout << "AO dilation passes: " << bake_result.dilation_passes << '\n';
   }
 
   return 0;

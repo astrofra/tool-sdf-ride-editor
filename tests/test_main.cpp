@@ -309,7 +309,10 @@ void test_uv_unwrap_generates_normalized_uvs()
 
   expect_true(unwrap_ok, "uv unwrap should succeed");
   expect_true(!unwrapped_mesh.vertices.empty(), "uv unwrap should output vertices");
-  expect_true(unwrapped_mesh.triangles.size() == build.mesh.triangles.size(), "uv unwrap should preserve triangle count");
+  expect_true(!unwrapped_mesh.triangles.empty(), "uv unwrap should output triangles");
+  expect_true(
+    unwrapped_mesh.triangles.size() <= build.mesh.triangles.size(),
+    "uv unwrap should not increase triangle count");
   expect_true(result.atlas_count == 1, "uv unwrap should keep the sample scene in a single atlas");
   expect_true(result.atlas_width > 0 && result.atlas_height > 0, "uv unwrap should report a non-empty atlas");
   expect_true(result.chart_count > 0, "uv unwrap should create at least one chart");
@@ -326,6 +329,38 @@ void test_uv_unwrap_generates_normalized_uvs()
     expect_true(vertex.uv0.x >= -0.001f && vertex.uv0.x <= 1.001f, "unwrapped u should stay normalized");
     expect_true(vertex.uv0.y >= -0.001f && vertex.uv0.y <= 1.001f, "unwrapped v should stay normalized");
   }
+}
+
+void test_uv_unwrap_welded_input_reduces_topology_size()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 8.0f;
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  sdf::UvUnwrapSettings settings;
+  settings.resolution = 256;
+  settings.padding = 4;
+
+  sdf::Mesh unwrapped_mesh;
+  sdf::UvUnwrapResult result;
+  const bool unwrap_ok = sdf::unwrap_mesh_uvs(
+    build.mesh,
+    settings,
+    &unwrapped_mesh,
+    &result,
+    &error_message);
+  expect_true(unwrap_ok, "welded uv unwrap should succeed");
+  expect_true(
+    unwrapped_mesh.vertices.size() < build.mesh.vertices.size(),
+    "welded uv unwrap should reduce the exported vertex count");
+  expect_true(
+    unwrapped_mesh.triangles.size() < build.mesh.triangles.size(),
+    "welded uv unwrap should reduce the exported triangle count on the sample scene");
 }
 
 void test_ao_bake_writes_png()
@@ -355,7 +390,6 @@ void test_ao_bake_writes_png()
   bake_settings.height = static_cast<int>(unwrap_result.atlas_height);
   bake_settings.ao_samples = 2;
   bake_settings.ao_max_distance = 8.0f;
-  bake_settings.dilation_passes = 2;
   bake_settings.seed = 123;
 
   sdf::Rgb8Image image;
@@ -373,6 +407,7 @@ void test_ao_bake_writes_png()
   expect_true(image.height == bake_settings.height, "ao bake should preserve bake height");
   expect_true(bake_result.baked_texels > 0, "ao bake should cover at least one texel");
   expect_true(bake_result.covered_texels >= bake_result.baked_texels, "dilation should never reduce texel coverage");
+  expect_true(bake_result.dilation_passes >= 16, "ao bake auto dilation should use a non-trivial pass count");
 
   std::size_t non_black_pixels = 0;
   for (unsigned char value : image.pixels)
@@ -444,6 +479,7 @@ int main()
     test_ray_scene_intersection_on_generated_mesh();
     test_debug_render_writes_png();
     test_uv_unwrap_generates_normalized_uvs();
+    test_uv_unwrap_welded_input_reduces_topology_size();
     test_ao_bake_writes_png();
     test_invalid_scene_file_reports_an_error();
     test_invalid_modifier_target_reports_an_error();

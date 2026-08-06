@@ -151,6 +151,12 @@ bool fail(std::string *error_message, const std::string &message)
   return false;
 }
 
+int compute_auto_dilation_pass_count(int width, int height)
+{
+  const int max_dimension = std::max(width, height);
+  return std::clamp(max_dimension / 32, 16, 64);
+}
+
 }  // namespace
 
 bool bake_ambient_occlusion_texture(
@@ -185,6 +191,7 @@ bool bake_ambient_occlusion_texture(
   std::vector<float> ao_values(texel_count, 0.0f);
   std::vector<float> coverage_scores(texel_count, -1.0e30f);
   std::vector<std::uint8_t> valid(texel_count, 0u);
+  std::vector<int> source_texels(texel_count, -1);
 
   for (std::size_t triangle_index = 0; triangle_index < uv_mesh.triangles.size(); ++triangle_index)
   {
@@ -265,6 +272,7 @@ bool bake_ambient_occlusion_texture(
         ao_values[texel_index] = ao;
         coverage_scores[texel_index] = coverage_score;
         valid[texel_index] = 1u;
+        source_texels[texel_index] = static_cast<int>(texel_index);
       }
     }
   }
@@ -275,12 +283,18 @@ bool bake_ambient_occlusion_texture(
     baked_texels += value != 0 ? 1u : 0u;
   }
 
-  const std::array<int, 8> offsets_x = {{-1, 0, 1, -1, 1, -1, 0, 1}};
-  const std::array<int, 8> offsets_y = {{-1, -1, -1, 0, 0, 1, 1, 1}};
-  for (int pass = 0; pass < std::max(settings.dilation_passes, 0); ++pass)
+  const int dilation_pass_count =
+    settings.dilation_passes >= 0
+      ? settings.dilation_passes
+      : compute_auto_dilation_pass_count(settings.width, settings.height);
+
+  const std::array<int, 8> offsets_x = {{0, -1, 1, 0, -1, 1, -1, 1}};
+  const std::array<int, 8> offsets_y = {{-1, 0, 0, 1, -1, -1, 1, 1}};
+  for (int pass = 0; pass < std::max(dilation_pass_count, 0); ++pass)
   {
     std::vector<float> next_ao = ao_values;
     std::vector<std::uint8_t> next_valid = valid;
+    std::vector<int> next_sources = source_texels;
     bool any_change = false;
 
     for (int y = 0; y < settings.height; ++y)
@@ -293,8 +307,7 @@ bool bake_ambient_occlusion_texture(
           continue;
         }
 
-        float sum = 0.0f;
-        int count = 0;
+        int chosen_source = -1;
         for (std::size_t offset_index = 0; offset_index < offsets_x.size(); ++offset_index)
         {
           const int nx = x + offsets_x[offset_index];
@@ -310,23 +323,27 @@ bool bake_ambient_occlusion_texture(
             continue;
           }
 
-          sum += ao_values[neighbor_index];
-          ++count;
+          chosen_source = source_texels[neighbor_index] >= 0
+            ? source_texels[neighbor_index]
+            : static_cast<int>(neighbor_index);
+          break;
         }
 
-        if (count <= 0)
+        if (chosen_source < 0)
         {
           continue;
         }
 
-        next_ao[texel_index] = sum / static_cast<float>(count);
+        next_ao[texel_index] = ao_values[static_cast<std::size_t>(chosen_source)];
         next_valid[texel_index] = 1u;
+        next_sources[texel_index] = chosen_source;
         any_change = true;
       }
     }
 
     ao_values.swap(next_ao);
     valid.swap(next_valid);
+    source_texels.swap(next_sources);
     if (!any_change)
     {
       break;
@@ -356,6 +373,7 @@ bool bake_ambient_occlusion_texture(
     result->baked_texels = baked_texels;
     result->covered_texels = covered_texels;
     result->dilated_texels = covered_texels >= baked_texels ? (covered_texels - baked_texels) : 0;
+    result->dilation_passes = dilation_pass_count;
   }
 
   if (error_message != nullptr)

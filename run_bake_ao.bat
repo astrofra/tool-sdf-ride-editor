@@ -15,8 +15,7 @@ if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
   --uv-padding 4 ^
   --bake-ao "%~dp0artifacts\generated\frame_006_blockout_ao.png" ^
   --bake-ao-samples 8 ^
-  --bake-ao-max-distance 10.0 ^
-  --bake-ao-dilation 4
+  --bake-ao-max-distance 10.0
 if errorlevel 1 goto :fail
 
 popd

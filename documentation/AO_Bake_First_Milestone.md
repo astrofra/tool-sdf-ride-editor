@@ -95,7 +95,7 @@ This is useful because it keeps debug AO and baked AO conceptually aligned durin
 
 ## Padding Decision
 
-The first baker performs a simple post-bake dilation pass.
+The baker keeps a **1-bit validity mask** for texels that were actually rasterized from UV triangles.
 
 Why:
 
@@ -103,13 +103,29 @@ Why:
 - valid texels should bleed outward into nearby invalid texels;
 - otherwise the bake image would leave black gaps around islands.
 
-The current dilation is intentionally modest:
+The fill step now works as an iterative texel propagation pass:
 
-- neighbor averaging;
-- fixed small pass count;
-- no seam classification.
+- each pass only writes into texels that are still invalid;
+- each newly written texel copies the AO value of a nearby valid texel;
+- the validity mask grows outward iteratively.
 
-This is a functional first step, not the final padding strategy.
+This is closer to the standard lightmap-style gutter fill than the earlier neighbor-average prototype.
+
+### Current Pass Count Policy
+
+If no explicit dilation pass count is provided, the baker derives it automatically from the bake resolution:
+
+- `16` passes minimum;
+- `64` passes maximum;
+- approximately `max(width, height) / 32` in between.
+
+Examples:
+
+- around `512` pixels: `16` passes;
+- around `1024` pixels: `32` passes;
+- around `2048` pixels: `64` passes.
+
+This intentionally favors robust island padding over preserving a black background around charts.
 
 ---
 
@@ -154,6 +170,7 @@ The following remain intentionally deferred:
 - AO supersampling;
 - chart debug images;
 - seam-aware blur or resolve;
+- source-aware nearest-fill heuristics beyond simple neighborhood propagation;
 - packed bake outputs;
 - bent-normal or curvature baking;
 - parallel bake execution.

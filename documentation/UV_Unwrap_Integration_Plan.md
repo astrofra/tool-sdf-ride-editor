@@ -55,9 +55,10 @@ The unwrap path is implemented as a local `sdf_core` module:
 The module:
 
 1. accepts a generated `Mesh`;
-2. submits it to `xatlas`;
-3. rebuilds a new local `Mesh` with seam-aware duplicated vertices and normalized `uv0`;
-4. returns atlas statistics for logging and later bake stages.
+2. welds the triangle-soup input into a shared-vertex unwrap mesh;
+3. submits that welded mesh to `xatlas`;
+4. rebuilds a new local `Mesh` with seam-aware duplicated vertices and normalized `uv0`;
+5. returns atlas statistics for logging and later bake stages.
 
 The existing generator remains unchanged.
 
@@ -82,6 +83,45 @@ For now:
 - any future shared-vertex optimization is deferred.
 
 This keeps the UV milestone focused on function rather than premature mesh refactoring.
+
+To compensate partially, the unwrap path now performs a lightweight vertex weld before calling `xatlas`.
+
+This does not change the generator API, but it gives the unwrap library a better connected input topology.
+
+As a side effect, the unwrap/export mesh may contain fewer triangles than the raw generated triangle soup when welded duplicates or degenerate faces collapse away.
+
+The same topology choice also explains why unwrap fragmentation is still visible:
+
+- the generated mesh is effectively a triangle soup at the API level;
+- the tetrahedral surface extractor produces many small local directional changes;
+- automatic chart generation therefore sees many opportunities to split islands.
+
+This is a structural limitation of the current mesher, not only an unwrap-library issue.
+
+---
+
+## Low-Fragmentation Chart Profile
+
+The unwrap module now uses a lower-fragmentation chart profile by default.
+
+Compared to the effective `xatlas` defaults, this profile is intentionally more tolerant:
+
+- more chart-growing iterations;
+- higher chart growth cost threshold;
+- lower penalties for normal deviation;
+- lower penalties for straightness and roundness;
+- much lower normal seam weight;
+- zero texture seam weight from the provisional input UVs.
+
+The unwrap path also stops feeding the generator's provisional `uv0` values into `xatlas`.
+
+This is intentional because those UVs are only placeholder projections and can bias chart segmentation in unhelpful ways.
+
+The goal is not to produce artist-grade UVs.
+
+The goal is to reduce unnecessary chart explosion on the current generated mesh so AO baking produces fewer visibly isolated islands.
+
+This does **not** remove the deeper limitation from the current mesher topology, but it improves the unwrap stage enough to be useful now.
 
 ---
 
@@ -147,7 +187,13 @@ The unwrap path is exposed through coarse CLI switches:
 
 This is enough for the first milestone.
 
-More detailed charting or packing controls should remain deferred until there is real need from baking workflows.
+The lower-fragmentation chart profile is currently applied internally rather than exposed as a large set of CLI tuning flags.
+
+This is deliberate:
+
+- the project does not yet need a full unwrap-authoring surface;
+- broad chart tuning would add noise to the CLI too early;
+- the current objective is to keep the default bake workflow improving without making the tool harder to use.
 
 ---
 
