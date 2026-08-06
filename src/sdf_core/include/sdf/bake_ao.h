@@ -16,9 +16,9 @@ struct AoBakeSettings
   int width = 0;
   int height = 0;
   int min_ao_samples = 4;
-  int max_ao_samples = 32;
+  int max_ao_samples = 256;
   int dilation_passes = -1;
-  float ao_error_threshold = 0.10f;
+  float ao_error_threshold = 0.03f;
   float ao_max_distance = 12.0f;
   bool flip_v = true;
   std::uint32_t seed = 1337;

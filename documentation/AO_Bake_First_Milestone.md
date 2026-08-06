@@ -108,8 +108,8 @@ This gives the baker a cheap early-out on texels that are obviously open or obvi
 The default bake profile is:
 
 - minimum samples: `4`
-- maximum samples: `32`
-- error threshold: `0.10`
+- maximum samples: `256`
+- error threshold: `0.03`
 
 ---
 

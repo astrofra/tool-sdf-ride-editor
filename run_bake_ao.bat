@@ -14,9 +14,9 @@ if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
   --uv-resolution 256 ^
   --uv-padding 4 ^
   --bake-ao "%~dp0artifacts\generated\frame_006_blockout_ao.png" ^
-  --bake-ao-samples 32 ^
+  --bake-ao-samples 256 ^
   --bake-ao-min-samples 4 ^
-  --bake-ao-error-threshold 0.10 ^
+  --bake-ao-error-threshold 0.03 ^
   --bake-ao-max-distance 10.0
 if errorlevel 1 goto :fail
 
