@@ -4,6 +4,8 @@
 #   bounds <minx> <miny> <minz> <maxx> <maxy> <maxz>
 #   cell_size <value>
 #   box <add|subtract> <name> <tx> <ty> <tz> <hx> <hy> <hz> [material_id]
+#   noise_displace_masked <name> <target_box_name> <amplitude> <frequency> <seed> <octaves> <mask> <mask_width>
+#   box_cut <name> <target_box_name> <tx> <ty> <tz> <hx> <hy> <hz>
 
 scene frame_006_blockout
 bounds -36 -4 -16 42 42 96
@@ -21,5 +23,9 @@ box add right_plinth 10 2 24 2 2 2
 box add left_marker_head -20 7 8 2.5 3 2.5
 box add left_marker_stem -20 2 8 1 2 1
 box add debris_slab -8 1 20 2 1 2
-box subtract left_tower_opening -18 20 18 2 4 2
-box subtract right_tower_opening 16 20 13 1.5 4 1.5
+
+noise_displace_masked left_tower_decay left_tower 0.75 0.18 17 3 top_edges 4.0
+noise_displace_masked right_tower_decay right_tower 0.95 0.14 29 3 top_edges 5.0
+
+box_cut left_tower_opening left_tower 0 2 0 2 4 2
+box_cut right_tower_opening right_tower -5 -2 -2 1.5 4 1.5

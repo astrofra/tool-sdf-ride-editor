@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <vector>
 
@@ -77,6 +78,36 @@ bool parse_uint32(const std::string &text, std::uint32_t *value)
   }
 }
 
+bool parse_mask(const std::string &text, ModifierMask *mask)
+{
+  if (text == "all")
+  {
+    *mask = ModifierMask::All;
+    return true;
+  }
+  if (text == "top")
+  {
+    *mask = ModifierMask::Top;
+    return true;
+  }
+  if (text == "bottom")
+  {
+    *mask = ModifierMask::Bottom;
+    return true;
+  }
+  if (text == "edges")
+  {
+    *mask = ModifierMask::Edges;
+    return true;
+  }
+  if (text == "top_edges")
+  {
+    *mask = ModifierMask::TopEdges;
+    return true;
+  }
+  return false;
+}
+
 bool fail_with_message(std::string *error_message, const std::filesystem::path &path, int line_number, const std::string &reason)
 {
   if (error_message != nullptr)
@@ -136,6 +167,154 @@ bool parse_box_line(
   }
 
   scene->boxes.push_back(box);
+  return true;
+}
+
+bool parse_noise_modifier_line(
+  const std::vector<std::string> &tokens,
+  const std::filesystem::path &path,
+  int line_number,
+  SceneDocument *scene,
+  std::string *error_message)
+{
+  if (tokens.size() != 9)
+  {
+    return fail_with_message(
+      error_message,
+      path,
+      line_number,
+      "noise_displace_masked expects 8 arguments");
+  }
+
+  NoiseDisplaceMaskedModifier modifier;
+  modifier.name = tokens[1];
+  modifier.target_box_name = tokens[2];
+
+  if (!parse_float(tokens[3], &modifier.amplitude) ||
+      !parse_float(tokens[4], &modifier.frequency) ||
+      !parse_uint32(tokens[5], &modifier.seed) ||
+      !parse_uint32(tokens[6], &modifier.octaves) ||
+      !parse_mask(tokens[7], &modifier.mask) ||
+      !parse_float(tokens[8], &modifier.mask_width))
+  {
+    return fail_with_message(error_message, path, line_number, "noise_displace_masked arguments are invalid");
+  }
+
+  if (modifier.amplitude < 0.0f)
+  {
+    return fail_with_message(error_message, path, line_number, "noise_displace_masked amplitude must be non-negative");
+  }
+
+  if (modifier.frequency <= 0.0f)
+  {
+    return fail_with_message(error_message, path, line_number, "noise_displace_masked frequency must be strictly positive");
+  }
+
+  if (modifier.octaves == 0)
+  {
+    return fail_with_message(error_message, path, line_number, "noise_displace_masked octaves must be at least 1");
+  }
+
+  if (modifier.mask_width <= 0.0f)
+  {
+    return fail_with_message(error_message, path, line_number, "noise_displace_masked mask_width must be strictly positive");
+  }
+
+  scene->noise_modifiers.push_back(modifier);
+  return true;
+}
+
+bool parse_box_cut_modifier_line(
+  const std::vector<std::string> &tokens,
+  const std::filesystem::path &path,
+  int line_number,
+  SceneDocument *scene,
+  std::string *error_message)
+{
+  if (tokens.size() != 9)
+  {
+    return fail_with_message(error_message, path, line_number, "box_cut expects 8 arguments");
+  }
+
+  BoxCutModifier modifier;
+  modifier.name = tokens[1];
+  modifier.target_box_name = tokens[2];
+
+  if (!parse_float(tokens[3], &modifier.translation.x) ||
+      !parse_float(tokens[4], &modifier.translation.y) ||
+      !parse_float(tokens[5], &modifier.translation.z) ||
+      !parse_float(tokens[6], &modifier.half_size.x) ||
+      !parse_float(tokens[7], &modifier.half_size.y) ||
+      !parse_float(tokens[8], &modifier.half_size.z))
+  {
+    return fail_with_message(error_message, path, line_number, "box_cut numeric fields are invalid");
+  }
+
+  if (modifier.half_size.x <= 0.0f || modifier.half_size.y <= 0.0f || modifier.half_size.z <= 0.0f)
+  {
+    return fail_with_message(error_message, path, line_number, "box_cut half sizes must be strictly positive");
+  }
+
+  scene->box_cut_modifiers.push_back(modifier);
+  return true;
+}
+
+bool validate_modifier_targets(
+  const SceneDocument &scene,
+  const std::filesystem::path &path,
+  std::string *error_message)
+{
+  for (std::size_t i = 0; i < scene.boxes.size(); ++i)
+  {
+    for (std::size_t j = i + 1; j < scene.boxes.size(); ++j)
+    {
+      if (scene.boxes[i].name == scene.boxes[j].name)
+      {
+        if (error_message != nullptr)
+        {
+          *error_message = "scene file has duplicate box name '" + scene.boxes[i].name + "': " + path.string();
+        }
+        return false;
+      }
+    }
+  }
+
+  auto box_exists = [&](const std::string &box_name) -> bool
+  {
+    for (const SdfBox &box : scene.boxes)
+    {
+      if (box.name == box_name)
+      {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (const NoiseDisplaceMaskedModifier &modifier : scene.noise_modifiers)
+  {
+    if (!box_exists(modifier.target_box_name))
+    {
+      if (error_message != nullptr)
+      {
+        *error_message = "noise_displace_masked target box '" + modifier.target_box_name + "' does not exist: " + path.string();
+      }
+      return false;
+    }
+  }
+
+  for (const BoxCutModifier &modifier : scene.box_cut_modifiers)
+  {
+    if (!box_exists(modifier.target_box_name))
+    {
+      if (error_message != nullptr)
+      {
+        *error_message = "box_cut target box '" + modifier.target_box_name + "' does not exist: " + path.string();
+      }
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -244,6 +423,24 @@ bool load_scene_file(
       continue;
     }
 
+    if (tokens[0] == "noise_displace_masked")
+    {
+      if (!parse_noise_modifier_line(tokens, input_path, line_number, &parsed_file.scene, error_message))
+      {
+        return false;
+      }
+      continue;
+    }
+
+    if (tokens[0] == "box_cut")
+    {
+      if (!parse_box_cut_modifier_line(tokens, input_path, line_number, &parsed_file.scene, error_message))
+      {
+        return false;
+      }
+      continue;
+    }
+
     return fail_with_message(error_message, input_path, line_number, "unknown directive '" + tokens[0] + "'");
   }
 
@@ -271,6 +468,11 @@ bool load_scene_file(
     {
       *error_message = "scene file does not define any boxes: " + input_path.string();
     }
+    return false;
+  }
+
+  if (!validate_modifier_targets(parsed_file.scene, input_path, error_message))
+  {
     return false;
   }
 

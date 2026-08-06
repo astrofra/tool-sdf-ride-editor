@@ -15,6 +15,15 @@ enum class CsgOp : std::uint8_t
   Subtract = 1
 };
 
+enum class ModifierMask : std::uint8_t
+{
+  All = 0,
+  Top = 1,
+  Bottom = 2,
+  Edges = 3,
+  TopEdges = 4
+};
+
 struct Transform
 {
   Vec3 translation;
@@ -29,10 +38,32 @@ struct SdfBox
   CsgOp op = CsgOp::Add;
 };
 
+struct NoiseDisplaceMaskedModifier
+{
+  std::string name;
+  std::string target_box_name;
+  float amplitude = 0.0f;
+  float frequency = 0.0f;
+  std::uint32_t seed = 0;
+  std::uint32_t octaves = 1;
+  ModifierMask mask = ModifierMask::All;
+  float mask_width = 1.0f;
+};
+
+struct BoxCutModifier
+{
+  std::string name;
+  std::string target_box_name;
+  Vec3 translation;
+  Vec3 half_size;
+};
+
 struct SceneDocument
 {
   std::string name;
   std::vector<SdfBox> boxes;
+  std::vector<NoiseDisplaceMaskedModifier> noise_modifiers;
+  std::vector<BoxCutModifier> box_cut_modifiers;
 };
 
 struct BuildSettings
@@ -45,4 +76,3 @@ SceneDocument make_frame_006_blockout_scene();
 BuildSettings make_frame_006_build_settings();
 
 }  // namespace sdf
-

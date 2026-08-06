@@ -16,6 +16,38 @@ SdfBox make_box(const char *name, Vec3 translation, Vec3 half_size, CsgOp op = C
   return box;
 }
 
+NoiseDisplaceMaskedModifier make_noise_modifier(
+  const char *name,
+  const char *target_box_name,
+  float amplitude,
+  float frequency,
+  std::uint32_t seed,
+  std::uint32_t octaves,
+  ModifierMask mask,
+  float mask_width)
+{
+  NoiseDisplaceMaskedModifier modifier;
+  modifier.name = name;
+  modifier.target_box_name = target_box_name;
+  modifier.amplitude = amplitude;
+  modifier.frequency = frequency;
+  modifier.seed = seed;
+  modifier.octaves = octaves;
+  modifier.mask = mask;
+  modifier.mask_width = mask_width;
+  return modifier;
+}
+
+BoxCutModifier make_box_cut_modifier(const char *name, const char *target_box_name, Vec3 translation, Vec3 half_size)
+{
+  BoxCutModifier modifier;
+  modifier.name = name;
+  modifier.target_box_name = target_box_name;
+  modifier.translation = translation;
+  modifier.half_size = half_size;
+  return modifier;
+}
+
 }  // namespace
 
 SceneDocument make_frame_006_blockout_scene()
@@ -35,9 +67,17 @@ SceneDocument make_frame_006_blockout_scene()
     make_box("right_plinth", {10.0f, 2.0f, 24.0f}, {2.0f, 2.0f, 2.0f}),
     make_box("left_marker_head", {-20.0f, 7.0f, 8.0f}, {2.5f, 3.0f, 2.5f}),
     make_box("left_marker_stem", {-20.0f, 2.0f, 8.0f}, {1.0f, 2.0f, 1.0f}),
-    make_box("debris_slab", {-8.0f, 1.0f, 20.0f}, {2.0f, 1.0f, 2.0f}),
-    make_box("left_tower_opening", {-18.0f, 20.0f, 18.0f}, {2.0f, 4.0f, 2.0f}, CsgOp::Subtract),
-    make_box("right_tower_opening", {16.0f, 20.0f, 13.0f}, {1.5f, 4.0f, 1.5f}, CsgOp::Subtract)
+    make_box("debris_slab", {-8.0f, 1.0f, 20.0f}, {2.0f, 1.0f, 2.0f})
+  };
+
+  scene.noise_modifiers = {
+    make_noise_modifier("left_tower_decay", "left_tower", 0.75f, 0.18f, 17, 3, ModifierMask::TopEdges, 4.0f),
+    make_noise_modifier("right_tower_decay", "right_tower", 0.95f, 0.14f, 29, 3, ModifierMask::TopEdges, 5.0f)
+  };
+
+  scene.box_cut_modifiers = {
+    make_box_cut_modifier("left_tower_opening", "left_tower", {0.0f, 2.0f, 0.0f}, {2.0f, 4.0f, 2.0f}),
+    make_box_cut_modifier("right_tower_opening", "right_tower", {-5.0f, -2.0f, -2.0f}, {1.5f, 4.0f, 1.5f})
   };
 
   return scene;
@@ -53,4 +93,3 @@ BuildSettings make_frame_006_build_settings()
 }
 
 }  // namespace sdf
-
