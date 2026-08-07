@@ -4,6 +4,7 @@
 
 Planned and first milestone implemented on **August 6, 2026**.
 Chart-debug and fragmentation instrumentation added on **August 7, 2026**.
+Fixed-resolution power-of-two atlas enforcement added on **August 7, 2026**.
 
 This note records the current design and technical decisions for adding automatic UV unwrapping to the SDF mesh pipeline.
 
@@ -133,7 +134,7 @@ The current unwrap path supports:
 - one generated mesh at a time;
 - one UV set in `uv0`;
 - OBJ export of the unwrapped result;
-- CLI-driven atlas resolution and padding control;
+- CLI-driven fixed atlas resolution and padding control;
 - chart-colored UV atlas debug images;
 - unwrap fragmentation statistics in the CLI output.
 
@@ -173,6 +174,26 @@ This is meant for:
 - quick inspection of island count and packing;
 - checking whether neighboring colors correspond to unrelated islands;
 - understanding whether unwrap fragmentation or bake settings are the dominant issue.
+
+### Current Fixed-Resolution POT Policy
+
+The unwrap path now treats `--uv-resolution N` as a **fixed atlas size**, not an approximate target.
+
+Current policy:
+
+- the requested unwrap resolution must be a power of two;
+- the unwrap pass first asks `xatlas` for an estimated texel density for the requested target size;
+- it then repacks into that exact fixed resolution;
+- if the first estimate is too dense to fit in one atlas, the unwrap step lowers texel density automatically until it fits;
+- if the mesh does not fit into a single atlas of that exact size, unwrap fails explicitly.
+
+This is intentional because the bake pipeline now needs deterministic texture sizes:
+
+- for predictable asset budgeting;
+- for power-of-two texture workflows;
+- for stable downstream material integration.
+
+As a consequence, AO baking now inherits an exact atlas size from unwrap instead of following an approximate packed resolution.
 
 ---
 

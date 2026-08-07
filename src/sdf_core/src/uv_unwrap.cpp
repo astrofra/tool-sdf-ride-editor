@@ -37,6 +37,43 @@ bool fail(std::string *error_message, const std::string &message)
   return false;
 }
 
+bool is_power_of_two(std::uint32_t value)
+{
+  return value != 0u && (value & (value - 1u)) == 0u;
+}
+
+xatlas::PackOptions make_pack_options(
+  const UvUnwrapSettings &settings,
+  float texels_per_unit,
+  bool create_image)
+{
+  xatlas::PackOptions pack_options;
+  pack_options.maxChartSize = settings.max_chart_size;
+  pack_options.padding = settings.padding;
+  pack_options.texelsPerUnit = texels_per_unit;
+  pack_options.resolution = settings.resolution;
+  pack_options.bilinear = settings.bilinear;
+  pack_options.blockAlign = settings.block_align;
+  pack_options.bruteForce = settings.brute_force;
+  pack_options.createImage = create_image;
+  pack_options.rotateChartsToAxis = settings.rotate_charts_to_axis;
+  pack_options.rotateCharts = settings.rotate_charts;
+  return pack_options;
+}
+
+bool pack_charts_once(
+  xatlas::Atlas *atlas,
+  const UvUnwrapSettings &settings,
+  float texels_per_unit,
+  bool create_image)
+{
+  xatlas::PackOptions pack_options = make_pack_options(settings, texels_per_unit, create_image);
+  xatlas::PackCharts(atlas, pack_options);
+  return atlas->atlasCount == 1 &&
+         atlas->width == settings.resolution &&
+         atlas->height == settings.resolution;
+}
+
 std::uint32_t hash_u32(std::uint32_t value)
 {
   value ^= value >> 16;
@@ -437,6 +474,113 @@ bool build_unwrap_input_mesh(
   return !unwrap_mesh->vertices.empty() && !unwrap_mesh->indices.empty();
 }
 
+bool pack_charts_exact_resolution(
+  xatlas::Atlas *atlas,
+  const UvUnwrapSettings &settings,
+  bool create_image,
+  std::string *error_message)
+{
+  if (atlas == nullptr)
+  {
+    return fail(error_message, "uv unwrap requires a valid xatlas atlas");
+  }
+
+  if (settings.resolution == 0u)
+  {
+    return fail(error_message, "uv unwrap requires a strictly positive atlas resolution");
+  }
+
+  if (!is_power_of_two(settings.resolution))
+  {
+    return fail(error_message, "uv unwrap atlas resolution must be a power of two");
+  }
+
+  float resolved_texels_per_unit = settings.texels_per_unit;
+  if (resolved_texels_per_unit <= 0.0f)
+  {
+    xatlas::PackOptions estimate_options = make_pack_options(settings, 0.0f, false);
+    xatlas::PackCharts(atlas, estimate_options);
+    if (atlas->texelsPerUnit <= 0.0f)
+    {
+      return fail(error_message, "xatlas failed to estimate texels-per-unit for the requested atlas resolution");
+    }
+
+    resolved_texels_per_unit = atlas->texelsPerUnit;
+    if (!pack_charts_once(atlas, settings, resolved_texels_per_unit, false))
+    {
+      constexpr int kMaxHalvingSteps = 16;
+      constexpr int kBinarySearchSteps = 6;
+      float min_not_fitting_texels_per_unit = resolved_texels_per_unit;
+      bool found_fit = false;
+      for (int step = 0; step < kMaxHalvingSteps; ++step)
+      {
+        resolved_texels_per_unit *= 0.5f;
+        if (resolved_texels_per_unit <= 1.0e-6f)
+        {
+          break;
+        }
+
+        if (pack_charts_once(atlas, settings, resolved_texels_per_unit, false))
+        {
+          found_fit = true;
+          break;
+        }
+
+        min_not_fitting_texels_per_unit = resolved_texels_per_unit;
+      }
+
+      if (!found_fit)
+      {
+        return fail(
+          error_message,
+          "uv unwrap could not fit the mesh into the requested fixed atlas resolution; increase --uv-resolution");
+      }
+
+      for (int step = 0; step < kBinarySearchSteps; ++step)
+      {
+        const float mid_texels_per_unit = 0.5f * (resolved_texels_per_unit + min_not_fitting_texels_per_unit);
+        if (pack_charts_once(atlas, settings, mid_texels_per_unit, false))
+        {
+          resolved_texels_per_unit = mid_texels_per_unit;
+        }
+        else
+        {
+          min_not_fitting_texels_per_unit = mid_texels_per_unit;
+        }
+      }
+    }
+  }
+  else if (!pack_charts_once(atlas, settings, resolved_texels_per_unit, false))
+  {
+    return fail(
+      error_message,
+      "uv unwrap could not fit the mesh into the requested fixed atlas resolution with the requested texel density");
+  }
+
+  if (!pack_charts_once(atlas, settings, resolved_texels_per_unit, create_image))
+  {
+    return fail(
+      error_message,
+      "uv unwrap could not fit the mesh into a single fixed-resolution atlas; increase --uv-resolution or reduce density");
+  }
+
+  if (atlas->atlasCount != 1)
+  {
+    return fail(
+      error_message,
+      "uv unwrap could not fit the mesh into a single fixed-resolution atlas; increase --uv-resolution or reduce density");
+  }
+
+  if (atlas->width != settings.resolution || atlas->height != settings.resolution)
+  {
+    return fail(
+      error_message,
+      "uv unwrap failed to preserve the requested fixed atlas resolution");
+  }
+
+  return true;
+}
+
 }  // namespace
 
 bool unwrap_mesh_uvs(
@@ -505,30 +649,19 @@ bool unwrap_mesh_uvs(
   chart_options.normalSeamWeight = settings.normal_seam_weight;
   chart_options.textureSeamWeight = settings.texture_seam_weight;
 
-  xatlas::PackOptions pack_options;
-  pack_options.maxChartSize = settings.max_chart_size;
-  pack_options.padding = settings.padding;
-  pack_options.texelsPerUnit = settings.texels_per_unit;
-  pack_options.resolution = settings.resolution;
-  pack_options.bilinear = settings.bilinear;
-  pack_options.blockAlign = settings.block_align;
-  pack_options.bruteForce = settings.brute_force;
-  pack_options.createImage = result != nullptr || chart_debug_image != nullptr;
-  pack_options.rotateChartsToAxis = settings.rotate_charts_to_axis;
-  pack_options.rotateCharts = settings.rotate_charts;
-
-  xatlas::Generate(atlas.get(), chart_options, pack_options);
+  xatlas::ComputeCharts(atlas.get(), chart_options);
+  if (!pack_charts_exact_resolution(
+        atlas.get(),
+        settings,
+        result != nullptr || chart_debug_image != nullptr,
+        error_message))
+  {
+    return false;
+  }
 
   if (atlas->meshCount != 1)
   {
     return fail(error_message, "xatlas returned an unexpected mesh count");
-  }
-
-  if (atlas->atlasCount != 1)
-  {
-    return fail(
-      error_message,
-      "uv unwrap currently supports a single atlas page only; increase resolution or reduce density");
   }
 
   if (atlas->width == 0 || atlas->height == 0)

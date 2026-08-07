@@ -229,6 +229,18 @@ This is not meant as the final shading model.
 
 It exists so the unwrapped OBJ can be inspected immediately in DCC tools without a separate manual material setup step.
 
+### Current Output Resolution Policy
+
+As of **August 7, 2026**, the AO bake inherits a fixed power-of-two resolution from the unwrap stage.
+
+Current policy:
+
+- unwrap resolution is treated as an exact atlas size, not as an approximate target;
+- if unwrap cannot fit the mesh into one atlas of that exact size, unwrap fails;
+- the AO bake image then reuses that exact atlas width and height.
+
+This keeps the current bake output deterministic and power-of-two when the requested unwrap resolution is power-of-two.
+
 ---
 
 ## Deferred Work

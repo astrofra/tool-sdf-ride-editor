@@ -355,7 +355,7 @@ void test_uv_unwrap_generates_normalized_uvs()
     unwrapped_mesh.triangles.size() <= build.mesh.triangles.size(),
     "uv unwrap should not increase triangle count");
   expect_true(result.atlas_count == 1, "uv unwrap should keep the sample scene in a single atlas");
-  expect_true(result.atlas_width > 0 && result.atlas_height > 0, "uv unwrap should report a non-empty atlas");
+  expect_true(result.atlas_width == 512 && result.atlas_height == 512, "uv unwrap should preserve the requested fixed atlas resolution");
   expect_true(result.chart_count > 0, "uv unwrap should create at least one chart");
 
   for (const sdf::MeshTriangle &triangle : unwrapped_mesh.triangles)
@@ -371,6 +371,29 @@ void test_uv_unwrap_generates_normalized_uvs()
     expect_true(vertex.uv0.x >= -0.001f && vertex.uv0.x <= 1.001f, "unwrapped u should stay normalized");
     expect_true(vertex.uv0.y >= -0.001f && vertex.uv0.y <= 1.001f, "unwrapped v should stay normalized");
   }
+}
+
+void test_uv_unwrap_rejects_non_power_of_two_resolution()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 8.0f;
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  sdf::UvUnwrapSettings settings;
+  settings.resolution = 300;
+  settings.padding = 4;
+
+  sdf::Mesh unwrapped_mesh;
+  const bool unwrap_ok = sdf::unwrap_mesh_uvs(build.mesh, settings, &unwrapped_mesh, nullptr, &error_message);
+  expect_true(!unwrap_ok, "uv unwrap should reject non-power-of-two atlas resolutions");
+  expect_true(
+    error_message.find("power of two") != std::string::npos,
+    "uv unwrap should explain that atlas resolution must be a power of two");
 }
 
 void test_uv_unwrap_welded_input_reduces_topology_size()
@@ -473,6 +496,7 @@ void test_ao_bake_writes_png()
   sdf::UvUnwrapResult unwrap_result;
   const bool unwrap_ok = sdf::unwrap_mesh_uvs(build.mesh, unwrap_settings, &unwrapped_mesh, &unwrap_result, &error_message);
   expect_true(unwrap_ok, "uv unwrap should succeed before ao baking");
+  expect_true(unwrap_result.atlas_width == 128 && unwrap_result.atlas_height == 128, "ao bake unwrap should preserve the requested fixed atlas resolution");
 
   const sdf::RayScene ray_scene = sdf::build_ray_scene(build.mesh);
 
@@ -585,6 +609,7 @@ int main()
     test_ray_scene_intersection_on_generated_mesh();
     test_debug_render_writes_png();
     test_uv_unwrap_generates_normalized_uvs();
+    test_uv_unwrap_rejects_non_power_of_two_resolution();
     test_uv_unwrap_welded_input_reduces_topology_size();
     test_uv_unwrap_chart_debug_image_and_fragmentation_stats();
     test_ao_bake_writes_png();

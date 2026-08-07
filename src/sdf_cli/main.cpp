@@ -94,7 +94,10 @@ void print_usage()
     << "               [--debug-render PATH] [--debug-mode depth|normal|ao]\n"
     << "               [--render-width N] [--render-height N]\n"
     << "               [--camera-front | --camera-left-3q | --camera-right-3q]\n"
-    << "               [--ao-samples N] [--ao-max-distance F]\n";
+    << "               [--ao-samples N] [--ao-max-distance F]\n"
+    << "\n"
+    << "Notes:\n"
+    << "  --uv-resolution must be a power of two and is treated as an exact atlas size.\n";
 }
 
 }  // namespace
