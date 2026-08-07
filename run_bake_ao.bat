@@ -11,10 +11,10 @@ if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
   --scene "%~dp0scenes\frame_006_blockout.sdfscene" ^
   --out "%~dp0artifacts\generated\frame_006_blockout_unwrapped.obj" ^
   --unwrap-uvs ^
-  --uv-resolution 2048 ^
+  --uv-resolution 1024 ^
   --uv-padding 4 ^
   --bake-ao "%~dp0artifacts\generated\frame_006_blockout_ao.png" ^
-  --bake-ao-samples 256 ^
+  --bake-ao-samples 16 ^
   --bake-ao-min-samples 4 ^
   --bake-ao-error-threshold 0.03 ^
   --bake-ao-max-distance 10.0

@@ -16,7 +16,7 @@ struct AoBakeSettings
   int width = 0;
   int height = 0;
   int min_ao_samples = 4;
-  int max_ao_samples = 256;
+  int max_ao_samples = 16;
   int dilation_passes = -1;
   float ao_error_threshold = 0.03f;
   float ao_max_distance = 12.0f;
