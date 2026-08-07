@@ -10,6 +10,7 @@
 
 #include "sdf/bake_ao.h"
 #include "sdf/bake_normal.h"
+#include "sdf/bake_surface_pack.h"
 #include "sdf/debug_render.h"
 #include "sdf/generator.h"
 #include "sdf/image_write.h"
@@ -238,6 +239,7 @@ void print_usage()
     << "               [--bake-ao-denoise-passes N] [--bake-ao-denoise-radius N]\n"
     << "               [--bake-ao-dilation N]\n"
     << "               [--bake-normal PATH] [--bake-normal-dilation N]\n"
+    << "               [--bake-surface-pack PATH] [--surface-thickness-max-distance F]\n"
     << "               [--debug-render PATH] [--debug-mode depth|normal|ao]\n"
     << "               [--render-width N] [--render-height N]\n"
     << "               [--camera-front | --camera-left-3q | --camera-right-3q]\n"
@@ -249,6 +251,7 @@ void print_usage()
     << "Notes:\n"
     << "  --meshing-mode accepts 'marching_tetrahedra', 'dual_contouring', or 'adaptive_dual_contouring'.\n"
     << "  --bake-normal outputs a tangent-space normal map sampled from the original SDF.\n"
+    << "  --bake-surface-pack outputs a packed RGB PNG with R=AO, G=curvature, B=thickness.\n"
     << "  --uv-resolution must be a power of two and is treated as an exact atlas size.\n";
 }
 
@@ -263,6 +266,7 @@ int main(int argc, char **argv)
   std::filesystem::path debug_uv_charts_path;
   std::filesystem::path bake_ao_path;
   std::filesystem::path bake_normal_path;
+  std::filesystem::path bake_surface_pack_path;
   bool has_cell_size_override = false;
   float cell_size_override = 0.0f;
   bool has_meshing_mode_override = false;
@@ -278,6 +282,7 @@ int main(int argc, char **argv)
   sdf::UvUnwrapSettings unwrap_settings;
   sdf::AoBakeSettings bake_settings;
   sdf::NormalBakeSettings normal_bake_settings;
+  sdf::SurfacePackSettings surface_pack_settings;
   TimingSummary phase_timings;
   ConsoleProgressPrinter progress_printer;
 
@@ -312,6 +317,12 @@ int main(int argc, char **argv)
     if (argument == "--bake-normal" && index + 1 < argc)
     {
       bake_normal_path = argv[++index];
+      continue;
+    }
+
+    if (argument == "--bake-surface-pack" && index + 1 < argc)
+    {
+      bake_surface_pack_path = argv[++index];
       continue;
     }
 
@@ -420,6 +431,12 @@ int main(int argc, char **argv)
     if (argument == "--bake-normal-dilation" && index + 1 < argc)
     {
       normal_bake_settings.dilation_passes = std::stoi(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--surface-thickness-max-distance" && index + 1 < argc)
+    {
+      surface_pack_settings.thickness_max_distance = std::stof(argv[++index]);
       continue;
     }
 
@@ -563,8 +580,14 @@ int main(int argc, char **argv)
   sdf::Mesh export_mesh = build.mesh;
   sdf::UvUnwrapResult unwrap_result;
   sdf::Rgb8Image uv_chart_debug_image;
-  const bool needs_uv_unwrap = unwrap_uvs || !bake_ao_path.empty() || !bake_normal_path.empty() || !debug_uv_charts_path.empty();
-  const bool needs_ray_scene = !debug_render_path.empty() || !bake_ao_path.empty();
+  const bool needs_ao_bake = !bake_ao_path.empty() || !bake_surface_pack_path.empty();
+  const bool needs_uv_unwrap =
+    unwrap_uvs ||
+    needs_ao_bake ||
+    !bake_normal_path.empty() ||
+    !bake_surface_pack_path.empty() ||
+    !debug_uv_charts_path.empty();
+  const bool needs_ray_scene = !debug_render_path.empty() || needs_ao_bake;
 
   sdf::ObjWriteOptions obj_write_options;
   obj_write_options.object_name = scene_file.scene.name;
@@ -575,6 +598,8 @@ int main(int argc, char **argv)
 
   sdf::AoBakeResult bake_result;
   sdf::NormalBakeResult normal_bake_result;
+  sdf::SurfacePackResult surface_pack_result;
+  sdf::Rgb8Image ao_image;
   if (needs_uv_unwrap)
   {
     bool unwrap_ok = false;
@@ -677,12 +702,11 @@ int main(int argc, char **argv)
     }
   }
 
-  if (!bake_ao_path.empty())
+  if (needs_ao_bake)
   {
     bake_settings.width = static_cast<int>(unwrap_result.atlas_width);
     bake_settings.height = static_cast<int>(unwrap_result.atlas_height);
 
-    sdf::Rgb8Image image;
     bool bake_ok = false;
     {
       ScopedPhaseTimer phase_timer(&phase_timings, "Bake ambient occlusion");
@@ -690,7 +714,7 @@ int main(int argc, char **argv)
         export_mesh,
         ray_scene,
         bake_settings,
-        &image,
+        &ao_image,
         &bake_result,
         &error_message,
         progress_callback);
@@ -700,14 +724,60 @@ int main(int argc, char **argv)
       return fail_with_timings("AO bake failed: " + error_message);
     }
 
+    if (!bake_ao_path.empty())
+    {
+      bool bake_write_ok = false;
+      {
+        ScopedPhaseTimer phase_timer(&phase_timings, "Write AO bake image");
+        bake_write_ok = sdf::write_png_rgb8(ao_image, bake_ao_path, &error_message);
+      }
+      if (!bake_write_ok)
+      {
+        return fail_with_timings("AO bake image write failed: " + error_message);
+      }
+    }
+  }
+
+  if (!bake_surface_pack_path.empty())
+  {
+    surface_pack_settings.width = static_cast<int>(unwrap_result.atlas_width);
+    surface_pack_settings.height = static_cast<int>(unwrap_result.atlas_height);
+    if (surface_pack_settings.dilation_passes < 0 && bake_settings.dilation_passes >= 0)
+    {
+      surface_pack_settings.dilation_passes = bake_settings.dilation_passes;
+    }
+    if (surface_pack_settings.surface_epsilon <= 0.0f)
+    {
+      surface_pack_settings.surface_epsilon = std::max(scene_file.build_settings.cell_size * 0.05f, 1.0e-3f);
+    }
+
+    sdf::Rgb8Image image;
+    bool bake_ok = false;
+    {
+      ScopedPhaseTimer phase_timer(&phase_timings, "Bake surface pack");
+      bake_ok = sdf::bake_surface_pack_texture(
+        scene_file.scene,
+        export_mesh,
+        ao_image,
+        surface_pack_settings,
+        &image,
+        &surface_pack_result,
+        &error_message,
+        progress_callback);
+    }
+    if (!bake_ok)
+    {
+      return fail_with_timings("Surface pack bake failed: " + error_message);
+    }
+
     bool bake_write_ok = false;
     {
-      ScopedPhaseTimer phase_timer(&phase_timings, "Write AO bake image");
-      bake_write_ok = sdf::write_png_rgb8(image, bake_ao_path, &error_message);
+      ScopedPhaseTimer phase_timer(&phase_timings, "Write surface pack image");
+      bake_write_ok = sdf::write_png_rgb8(image, bake_surface_pack_path, &error_message);
     }
     if (!bake_write_ok)
     {
-      return fail_with_timings("AO bake image write failed: " + error_message);
+      return fail_with_timings("Surface pack image write failed: " + error_message);
     }
   }
 
@@ -767,9 +837,16 @@ int main(int argc, char **argv)
   {
     std::cout << "Debug image: " << debug_render_path.string() << '\n';
   }
-  if (!bake_ao_path.empty())
+  if (needs_ao_bake)
   {
-    std::cout << "AO bake: " << bake_ao_path.string() << '\n';
+    if (!bake_ao_path.empty())
+    {
+      std::cout << "AO bake: " << bake_ao_path.string() << '\n';
+    }
+    else
+    {
+      std::cout << "AO bake: generated in memory for surface pack\n";
+    }
     std::cout << "AO baked texels: " << bake_result.baked_texels << '\n';
     std::cout << "AO dilated texels: " << bake_result.dilated_texels << '\n';
     std::cout << "AO covered texels: " << bake_result.covered_texels << '\n';
@@ -786,6 +863,16 @@ int main(int argc, char **argv)
     std::cout << "Normal dilated texels: " << normal_bake_result.dilated_texels << '\n';
     std::cout << "Normal covered texels: " << normal_bake_result.covered_texels << '\n';
     std::cout << "Normal dilation passes: " << normal_bake_result.dilation_passes << '\n';
+  }
+  if (!bake_surface_pack_path.empty())
+  {
+    std::cout << "Surface pack: " << bake_surface_pack_path.string() << '\n';
+    std::cout << "Surface pack channels: R=AO, G=curvature, B=thickness\n";
+    std::cout << "Surface pack baked texels: " << surface_pack_result.baked_texels << '\n';
+    std::cout << "Surface pack dilated texels: " << surface_pack_result.dilated_texels << '\n';
+    std::cout << "Surface pack covered texels: " << surface_pack_result.covered_texels << '\n';
+    std::cout << "Surface pack thickness max distance: " << surface_pack_settings.thickness_max_distance << '\n';
+    std::cout << "Surface pack dilation passes: " << surface_pack_result.dilation_passes << '\n';
   }
 
   print_timing_summary();

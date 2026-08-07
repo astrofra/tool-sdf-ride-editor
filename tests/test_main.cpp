@@ -8,6 +8,7 @@
 
 #include "sdf/bake_ao.h"
 #include "sdf/bake_normal.h"
+#include "sdf/bake_surface_pack.h"
 #include "sdf/debug_render.h"
 #include "sdf/generator.h"
 #include "sdf/image_write.h"
@@ -792,6 +793,96 @@ void test_normal_bake_writes_png()
   expect_true(std::filesystem::file_size(output_path) > 0, "normal bake PNG output should not be empty");
 }
 
+void test_surface_pack_bake_writes_png()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 8.0f;
+  scene_file.build_settings.meshing_mode = sdf::MeshingMode::AdaptiveDualContouring;
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  sdf::UvUnwrapSettings unwrap_settings;
+  unwrap_settings.resolution = 128;
+  unwrap_settings.padding = 4;
+
+  sdf::Mesh unwrapped_mesh;
+  sdf::UvUnwrapResult unwrap_result;
+  const bool unwrap_ok = sdf::unwrap_mesh_uvs(build.mesh, unwrap_settings, &unwrapped_mesh, &unwrap_result, &error_message);
+  expect_true(unwrap_ok, "uv unwrap should succeed before surface pack baking");
+
+  const sdf::RayScene ray_scene = sdf::build_ray_scene(build.mesh);
+
+  sdf::AoBakeSettings ao_settings;
+  ao_settings.width = static_cast<int>(unwrap_result.atlas_width);
+  ao_settings.height = static_cast<int>(unwrap_result.atlas_height);
+  ao_settings.min_ao_samples = 4;
+  ao_settings.max_ao_samples = 4;
+  ao_settings.denoise_passes = 1;
+  ao_settings.denoise_radius = 1;
+  ao_settings.ao_error_threshold = 1.0f;
+  ao_settings.ao_max_distance = 8.0f;
+  ao_settings.seed = 123;
+
+  sdf::Rgb8Image ao_image;
+  sdf::AoBakeResult ao_result;
+  const bool ao_ok = sdf::bake_ambient_occlusion_texture(
+    unwrapped_mesh,
+    ray_scene,
+    ao_settings,
+    &ao_image,
+    &ao_result,
+    &error_message);
+  expect_true(ao_ok, "ao bake should succeed before surface pack baking");
+  expect_true(ao_result.baked_texels > 0, "surface pack test should have an ao source image");
+
+  sdf::SurfacePackSettings surface_settings;
+  surface_settings.width = static_cast<int>(unwrap_result.atlas_width);
+  surface_settings.height = static_cast<int>(unwrap_result.atlas_height);
+  surface_settings.surface_epsilon = 0.05f;
+  surface_settings.thickness_max_distance = 5.0f;
+
+  sdf::Rgb8Image image;
+  sdf::SurfacePackResult surface_result;
+  const bool bake_ok = sdf::bake_surface_pack_texture(
+    scene_file.scene,
+    unwrapped_mesh,
+    ao_image,
+    surface_settings,
+    &image,
+    &surface_result,
+    &error_message);
+
+  expect_true(bake_ok, "surface pack bake should succeed");
+  expect_true(image.width == surface_settings.width, "surface pack should preserve bake width");
+  expect_true(image.height == surface_settings.height, "surface pack should preserve bake height");
+  expect_true(surface_result.baked_texels > 0, "surface pack should cover at least one texel");
+  expect_true(surface_result.covered_texels >= surface_result.baked_texels, "surface pack dilation should never reduce texel coverage");
+  expect_true(surface_result.dilation_passes >= 16, "surface pack auto dilation should use a non-trivial pass count");
+
+  unsigned char max_red = 0;
+  unsigned char max_green = 0;
+  unsigned char max_blue = 0;
+  for (std::size_t index = 0; index + 2 < image.pixels.size(); index += 3)
+  {
+    max_red = std::max(max_red, image.pixels[index + 0]);
+    max_green = std::max(max_green, image.pixels[index + 1]);
+    max_blue = std::max(max_blue, image.pixels[index + 2]);
+  }
+  expect_true(max_red > 0, "surface pack red channel should contain AO");
+  expect_true(max_green > 0, "surface pack green channel should contain curvature");
+  expect_true(max_blue > 0, "surface pack blue channel should contain thickness");
+
+  const std::filesystem::path output_path = std::filesystem::current_path() / "test_output" / "frame_006_surface_pack.png";
+  const bool write_ok = sdf::write_png_rgb8(image, output_path, &error_message);
+  expect_true(write_ok, "surface pack PNG write should succeed");
+  expect_true(std::filesystem::exists(output_path), "surface pack should produce a PNG file");
+  expect_true(std::filesystem::file_size(output_path) > 0, "surface pack PNG output should not be empty");
+}
+
 void test_invalid_scene_file_reports_an_error()
 {
   const std::filesystem::path invalid_path = std::filesystem::current_path() / "test_output" / "invalid_scene_missing_bounds.sdfscene";
@@ -859,6 +950,7 @@ int main()
     test_uv_unwrap_chart_debug_image_and_fragmentation_stats();
     test_ao_bake_writes_png();
     test_normal_bake_writes_png();
+    test_surface_pack_bake_writes_png();
     test_invalid_scene_file_reports_an_error();
     test_invalid_modifier_target_reports_an_error();
   }
