@@ -19,6 +19,7 @@ endfunction()
 
 add_library(sdf_core
   src/sdf_core/src/bake_ao.cpp
+  src/sdf_core/src/bake_normal.cpp
   src/sdf_core/src/debug_render.cpp
   src/sdf_core/src/generator.cpp
   src/sdf_core/src/image_write.cpp

@@ -87,9 +87,6 @@ bool operator==(const FaceKey &lhs, const FaceKey &rhs)
 }
 
 constexpr std::uint32_t kInvalidIndex = std::numeric_limits<std::uint32_t>::max();
-constexpr float kAdaptiveNormalDotThreshold = 0.96f;
-constexpr float kAdaptivePlaneErrorRatio = 0.06f;
-constexpr float kAdaptiveMinPlaneErrorInCells = 0.75f;
 
 constexpr std::array<std::array<int, 4>, 6> kCubeTetrahedra = {{
   {{0, 5, 1, 6}},
@@ -705,7 +702,7 @@ bool adaptive_block_is_flat(
   const AdaptiveBlockStats &stats,
   const Vec3 &position,
   float leaf_world_size,
-  float min_cell_size)
+  const BuildSettings &settings)
 {
   if (stats.active_cell_count == 0 || stats.samples.empty())
   {
@@ -723,8 +720,10 @@ bool adaptive_block_is_flat(
     max_plane_error = std::max(max_plane_error, std::fabs(dot(sample_normal, position - sample.position)));
   }
 
-  const float plane_error_limit = std::max(min_cell_size * kAdaptiveMinPlaneErrorInCells, leaf_world_size * kAdaptivePlaneErrorRatio);
-  return min_normal_dot >= kAdaptiveNormalDotThreshold && max_plane_error <= plane_error_limit;
+  const float plane_error_limit = std::max(
+    settings.cell_size * settings.adaptive_min_plane_error_in_cells,
+    leaf_world_size * settings.adaptive_plane_error_ratio);
+  return min_normal_dot >= settings.adaptive_normal_dot_threshold && max_plane_error <= plane_error_limit;
 }
 
 void polygonize_tetrahedron(
@@ -1305,7 +1304,7 @@ void build_adaptive_leaf_vertices_recursive(
   };
   const Vec3 position = solve_dual_vertex_position(stats.samples, cell_min, cell_max);
 
-  if (adaptive_block_is_flat(stats, position, world_size, settings.cell_size))
+  if (adaptive_block_is_flat(stats, position, world_size, settings))
   {
     assign_adaptive_leaf_vertex(
       scene,
@@ -1742,6 +1741,11 @@ float evaluate_scene_sdf(const SceneDocument &scene, const Vec3 &point)
   return distance;
 }
 
+Vec3 estimate_scene_surface_normal(const SceneDocument &scene, const Vec3 &point, float epsilon)
+{
+  return estimate_surface_normal(scene, point, epsilon);
+}
+
 SceneBuildResult build_scene_mesh(
   const SceneDocument &scene,
   const BuildSettings &settings,
@@ -1750,6 +1754,21 @@ SceneBuildResult build_scene_mesh(
   if (settings.cell_size <= 0.0f)
   {
     throw std::invalid_argument("cell_size must be strictly positive");
+  }
+
+  if (settings.adaptive_normal_dot_threshold < 0.0f || settings.adaptive_normal_dot_threshold > 1.0f)
+  {
+    throw std::invalid_argument("adaptive_normal_dot_threshold must stay within [0, 1]");
+  }
+
+  if (settings.adaptive_plane_error_ratio < 0.0f)
+  {
+    throw std::invalid_argument("adaptive_plane_error_ratio must be non-negative");
+  }
+
+  if (settings.adaptive_min_plane_error_in_cells < 0.0f)
+  {
+    throw std::invalid_argument("adaptive_min_plane_error_in_cells must be non-negative");
   }
 
   const Vec3 span = settings.bounds.max - settings.bounds.min;

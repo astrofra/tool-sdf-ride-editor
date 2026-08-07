@@ -368,6 +368,7 @@ Current policy:
 The adaptive milestone is tracked in:
 
 - `documentation/Adaptive_Dual_Contouring_Octree_Milestone.md`
+- `documentation/SDF_Normal_Bake_And_Shared_Texture_LOD_Plan.md`
 
 Recommended rule:
 

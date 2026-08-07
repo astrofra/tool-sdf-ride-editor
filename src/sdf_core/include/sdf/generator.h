@@ -18,6 +18,7 @@ struct SceneBuildResult
 
 float evaluate_box_sdf(const SdfBox &box, const Vec3 &point);
 float evaluate_scene_sdf(const SceneDocument &scene, const Vec3 &point);
+Vec3 estimate_scene_surface_normal(const SceneDocument &scene, const Vec3 &point, float epsilon);
 SceneBuildResult build_scene_mesh(
   const SceneDocument &scene,
   const BuildSettings &settings,

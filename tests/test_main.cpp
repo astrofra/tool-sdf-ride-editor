@@ -7,6 +7,7 @@
 #include <string>
 
 #include "sdf/bake_ao.h"
+#include "sdf/bake_normal.h"
 #include "sdf/debug_render.h"
 #include "sdf/generator.h"
 #include "sdf/image_write.h"
@@ -541,6 +542,37 @@ void test_adaptive_dual_contouring_uv_unwrap_succeeds()
   expect_true(result.atlas_width == 256 && result.atlas_height == 256, "adaptive dual contouring unwrap should preserve requested atlas resolution");
 }
 
+void test_adaptive_thresholds_influence_triangle_budget()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 4.0f;
+  scene_file.build_settings.meshing_mode = sdf::MeshingMode::AdaptiveDualContouring;
+
+  sdf::BuildSettings loose_settings = scene_file.build_settings;
+  loose_settings.adaptive_normal_dot_threshold = 0.94f;
+  loose_settings.adaptive_plane_error_ratio = 0.08f;
+  loose_settings.adaptive_min_plane_error_in_cells = 0.9f;
+  const sdf::SceneBuildResult loose_build = sdf::build_scene_mesh(scene_file.scene, loose_settings);
+
+  sdf::BuildSettings strict_settings = scene_file.build_settings;
+  strict_settings.adaptive_normal_dot_threshold = 0.9925f;
+  strict_settings.adaptive_plane_error_ratio = 0.02f;
+  strict_settings.adaptive_min_plane_error_in_cells = 0.35f;
+  const sdf::SceneBuildResult strict_build = sdf::build_scene_mesh(scene_file.scene, strict_settings);
+
+  expect_true(
+    strict_build.mesh.triangles.size() > loose_build.mesh.triangles.size(),
+    "stricter adaptive thresholds should keep more triangles than looser thresholds");
+  expect_true(
+    strict_build.mesh.vertices.size() > loose_build.mesh.vertices.size(),
+    "stricter adaptive thresholds should keep more vertices than looser thresholds");
+}
+
 void test_uv_unwrap_welded_input_reduces_topology_size()
 {
   sdf::SceneFile scene_file;
@@ -697,6 +729,69 @@ void test_ao_bake_writes_png()
   expect_true(std::filesystem::file_size(output_path) > 0, "ao bake PNG output should not be empty");
 }
 
+void test_normal_bake_writes_png()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 8.0f;
+  scene_file.build_settings.meshing_mode = sdf::MeshingMode::AdaptiveDualContouring;
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  sdf::UvUnwrapSettings unwrap_settings;
+  unwrap_settings.resolution = 128;
+  unwrap_settings.padding = 4;
+
+  sdf::Mesh unwrapped_mesh;
+  sdf::UvUnwrapResult unwrap_result;
+  const bool unwrap_ok = sdf::unwrap_mesh_uvs(build.mesh, unwrap_settings, &unwrapped_mesh, &unwrap_result, &error_message);
+  expect_true(unwrap_ok, "uv unwrap should succeed before normal baking");
+
+  sdf::NormalBakeSettings normal_settings;
+  normal_settings.width = static_cast<int>(unwrap_result.atlas_width);
+  normal_settings.height = static_cast<int>(unwrap_result.atlas_height);
+  normal_settings.surface_epsilon = 0.05f;
+
+  sdf::Rgb8Image image;
+  sdf::NormalBakeResult bake_result;
+  const bool bake_ok = sdf::bake_sdf_normal_texture(
+    scene_file.scene,
+    unwrapped_mesh,
+    normal_settings,
+    &image,
+    &bake_result,
+    &error_message);
+
+  expect_true(bake_ok, "normal bake should succeed");
+  expect_true(image.width == normal_settings.width, "normal bake should preserve bake width");
+  expect_true(image.height == normal_settings.height, "normal bake should preserve bake height");
+  expect_true(bake_result.baked_texels > 0, "normal bake should cover at least one texel");
+  expect_true(bake_result.covered_texels >= bake_result.baked_texels, "normal bake dilation should never reduce texel coverage");
+  expect_true(bake_result.dilation_passes >= 16, "normal bake auto dilation should use a non-trivial pass count");
+
+  std::size_t non_black_pixels = 0;
+  std::size_t non_flat_pixels = 0;
+  for (std::size_t index = 0; index + 2 < image.pixels.size(); index += 3)
+  {
+    const unsigned char r = image.pixels[index + 0];
+    const unsigned char g = image.pixels[index + 1];
+    const unsigned char b = image.pixels[index + 2];
+    non_black_pixels += (r != 0 || g != 0 || b != 0) ? 1u : 0u;
+    non_flat_pixels += (r != 128 || g != 128 || b != 255) ? 1u : 0u;
+  }
+  expect_true(non_black_pixels > 0, "normal bake should produce visible pixels");
+  expect_true(non_flat_pixels > 0, "normal bake should contain some non-flat tangent-space normals");
+
+  const std::filesystem::path output_path = std::filesystem::current_path() / "test_output" / "frame_006_bake_normal.png";
+  const bool write_ok = sdf::write_png_rgb8(image, output_path, &error_message);
+  expect_true(write_ok, "normal bake PNG write should succeed");
+  expect_true(std::filesystem::exists(output_path), "normal bake should produce a PNG file");
+  expect_true(std::filesystem::file_size(output_path) > 0, "normal bake PNG output should not be empty");
+}
+
 void test_invalid_scene_file_reports_an_error()
 {
   const std::filesystem::path invalid_path = std::filesystem::current_path() / "test_output" / "invalid_scene_missing_bounds.sdfscene";
@@ -759,9 +854,11 @@ int main()
     test_dual_contouring_uv_unwrap_succeeds();
     test_adaptive_dual_contouring_reduces_triangle_count_further_than_uniform_dual();
     test_adaptive_dual_contouring_uv_unwrap_succeeds();
+    test_adaptive_thresholds_influence_triangle_budget();
     test_uv_unwrap_welded_input_reduces_topology_size();
     test_uv_unwrap_chart_debug_image_and_fragmentation_stats();
     test_ao_bake_writes_png();
+    test_normal_bake_writes_png();
     test_invalid_scene_file_reports_an_error();
     test_invalid_modifier_target_reports_an_error();
   }

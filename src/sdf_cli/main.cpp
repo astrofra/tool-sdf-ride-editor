@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "sdf/bake_ao.h"
+#include "sdf/bake_normal.h"
 #include "sdf/debug_render.h"
 #include "sdf/generator.h"
 #include "sdf/image_write.h"
@@ -236,13 +237,18 @@ void print_usage()
     << "               [--bake-ao-error-threshold F] [--bake-ao-max-distance F]\n"
     << "               [--bake-ao-denoise-passes N] [--bake-ao-denoise-radius N]\n"
     << "               [--bake-ao-dilation N]\n"
+    << "               [--bake-normal PATH] [--bake-normal-dilation N]\n"
     << "               [--debug-render PATH] [--debug-mode depth|normal|ao]\n"
     << "               [--render-width N] [--render-height N]\n"
     << "               [--camera-front | --camera-left-3q | --camera-right-3q]\n"
     << "               [--ao-samples N] [--ao-max-distance F]\n"
+    << "               [--adaptive-normal-dot-threshold F]\n"
+    << "               [--adaptive-plane-error-ratio F]\n"
+    << "               [--adaptive-min-plane-error-cells F]\n"
     << "\n"
     << "Notes:\n"
     << "  --meshing-mode accepts 'marching_tetrahedra', 'dual_contouring', or 'adaptive_dual_contouring'.\n"
+    << "  --bake-normal outputs a tangent-space normal map sampled from the original SDF.\n"
     << "  --uv-resolution must be a power of two and is treated as an exact atlas size.\n";
 }
 
@@ -256,14 +262,22 @@ int main(int argc, char **argv)
   std::filesystem::path debug_render_path;
   std::filesystem::path debug_uv_charts_path;
   std::filesystem::path bake_ao_path;
+  std::filesystem::path bake_normal_path;
   bool has_cell_size_override = false;
   float cell_size_override = 0.0f;
   bool has_meshing_mode_override = false;
   sdf::MeshingMode meshing_mode_override = sdf::MeshingMode::MarchingTetrahedra;
+  bool has_adaptive_normal_dot_threshold_override = false;
+  float adaptive_normal_dot_threshold_override = 0.0f;
+  bool has_adaptive_plane_error_ratio_override = false;
+  float adaptive_plane_error_ratio_override = 0.0f;
+  bool has_adaptive_min_plane_error_in_cells_override = false;
+  float adaptive_min_plane_error_in_cells_override = 0.0f;
   bool unwrap_uvs = false;
   sdf::DebugRenderSettings debug_settings;
   sdf::UvUnwrapSettings unwrap_settings;
   sdf::AoBakeSettings bake_settings;
+  sdf::NormalBakeSettings normal_bake_settings;
   TimingSummary phase_timings;
   ConsoleProgressPrinter progress_printer;
 
@@ -292,6 +306,12 @@ int main(int argc, char **argv)
     if (argument == "--bake-ao" && index + 1 < argc)
     {
       bake_ao_path = argv[++index];
+      continue;
+    }
+
+    if (argument == "--bake-normal" && index + 1 < argc)
+    {
+      bake_normal_path = argv[++index];
       continue;
     }
 
@@ -397,6 +417,12 @@ int main(int argc, char **argv)
       continue;
     }
 
+    if (argument == "--bake-normal-dilation" && index + 1 < argc)
+    {
+      normal_bake_settings.dilation_passes = std::stoi(argv[++index]);
+      continue;
+    }
+
     if (argument == "--render-width" && index + 1 < argc)
     {
       debug_settings.width = std::stoi(argv[++index]);
@@ -436,6 +462,27 @@ int main(int argc, char **argv)
     if (argument == "--ao-max-distance" && index + 1 < argc)
     {
       debug_settings.ao_max_distance = std::stof(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--adaptive-normal-dot-threshold" && index + 1 < argc)
+    {
+      adaptive_normal_dot_threshold_override = std::stof(argv[++index]);
+      has_adaptive_normal_dot_threshold_override = true;
+      continue;
+    }
+
+    if (argument == "--adaptive-plane-error-ratio" && index + 1 < argc)
+    {
+      adaptive_plane_error_ratio_override = std::stof(argv[++index]);
+      has_adaptive_plane_error_ratio_override = true;
+      continue;
+    }
+
+    if (argument == "--adaptive-min-plane-error-cells" && index + 1 < argc)
+    {
+      adaptive_min_plane_error_in_cells_override = std::stof(argv[++index]);
+      has_adaptive_min_plane_error_in_cells_override = true;
       continue;
     }
 
@@ -488,6 +535,18 @@ int main(int argc, char **argv)
   {
     scene_file.build_settings.meshing_mode = meshing_mode_override;
   }
+  if (has_adaptive_normal_dot_threshold_override)
+  {
+    scene_file.build_settings.adaptive_normal_dot_threshold = adaptive_normal_dot_threshold_override;
+  }
+  if (has_adaptive_plane_error_ratio_override)
+  {
+    scene_file.build_settings.adaptive_plane_error_ratio = adaptive_plane_error_ratio_override;
+  }
+  if (has_adaptive_min_plane_error_in_cells_override)
+  {
+    scene_file.build_settings.adaptive_min_plane_error_in_cells = adaptive_min_plane_error_in_cells_override;
+  }
 
   const sdf::ProgressCallback progress_callback =
     [&](const sdf::ProgressUpdate &update)
@@ -504,7 +563,8 @@ int main(int argc, char **argv)
   sdf::Mesh export_mesh = build.mesh;
   sdf::UvUnwrapResult unwrap_result;
   sdf::Rgb8Image uv_chart_debug_image;
-  const bool needs_uv_unwrap = unwrap_uvs || !bake_ao_path.empty() || !debug_uv_charts_path.empty();
+  const bool needs_uv_unwrap = unwrap_uvs || !bake_ao_path.empty() || !bake_normal_path.empty() || !debug_uv_charts_path.empty();
+  const bool needs_ray_scene = !debug_render_path.empty() || !bake_ao_path.empty();
 
   sdf::ObjWriteOptions obj_write_options;
   obj_write_options.object_name = scene_file.scene.name;
@@ -514,6 +574,7 @@ int main(int argc, char **argv)
   }
 
   sdf::AoBakeResult bake_result;
+  sdf::NormalBakeResult normal_bake_result;
   if (needs_uv_unwrap)
   {
     bool unwrap_ok = false;
@@ -547,7 +608,46 @@ int main(int argc, char **argv)
     }
   }
 
+  if (!bake_normal_path.empty())
+  {
+    normal_bake_settings.width = static_cast<int>(unwrap_result.atlas_width);
+    normal_bake_settings.height = static_cast<int>(unwrap_result.atlas_height);
+    if (normal_bake_settings.surface_epsilon <= 0.0f)
+    {
+      normal_bake_settings.surface_epsilon = std::max(scene_file.build_settings.cell_size * 0.05f, 1.0e-3f);
+    }
+
+    sdf::Rgb8Image image;
+    bool normal_bake_ok = false;
+    {
+      ScopedPhaseTimer phase_timer(&phase_timings, "Bake normal map");
+      normal_bake_ok = sdf::bake_sdf_normal_texture(
+        scene_file.scene,
+        export_mesh,
+        normal_bake_settings,
+        &image,
+        &normal_bake_result,
+        &error_message,
+        progress_callback);
+    }
+    if (!normal_bake_ok)
+    {
+      return fail_with_timings("Normal bake failed: " + error_message);
+    }
+
+    bool normal_write_ok = false;
+    {
+      ScopedPhaseTimer phase_timer(&phase_timings, "Write normal bake image");
+      normal_write_ok = sdf::write_png_rgb8(image, bake_normal_path, &error_message);
+    }
+    if (!normal_write_ok)
+    {
+      return fail_with_timings("Normal bake image write failed: " + error_message);
+    }
+  }
+
   sdf::RayScene ray_scene;
+  if (needs_ray_scene)
   {
     ScopedPhaseTimer phase_timer(&phase_timings, "Build ray scene");
     ray_scene = sdf::build_ray_scene(build.mesh, progress_callback);
@@ -626,6 +726,12 @@ int main(int argc, char **argv)
   std::cout << "Boxes: " << scene_file.scene.boxes.size() << '\n';
   std::cout << "Meshing mode: " << sdf::meshing_mode_name(scene_file.build_settings.meshing_mode) << '\n';
   std::cout << "Cell size: " << scene_file.build_settings.cell_size << '\n';
+  if (scene_file.build_settings.meshing_mode == sdf::MeshingMode::AdaptiveDualContouring)
+  {
+    std::cout << "Adaptive normal dot threshold: " << scene_file.build_settings.adaptive_normal_dot_threshold << '\n';
+    std::cout << "Adaptive plane error ratio: " << scene_file.build_settings.adaptive_plane_error_ratio << '\n';
+    std::cout << "Adaptive min plane error (cells): " << scene_file.build_settings.adaptive_min_plane_error_in_cells << '\n';
+  }
   std::cout << "Sampled cells: " << build.sampled_cells << '\n';
   std::cout << "Occupied cells: " << build.occupied_cells << '\n';
   std::cout << "Generated vertices: " << build.mesh.vertices.size() << '\n';
@@ -672,6 +778,14 @@ int main(int argc, char **argv)
     std::cout << "AO denoise passes: " << bake_result.denoise_passes << '\n';
     std::cout << "AO denoise radius: " << bake_result.denoise_radius << '\n';
     std::cout << "AO dilation passes: " << bake_result.dilation_passes << '\n';
+  }
+  if (!bake_normal_path.empty())
+  {
+    std::cout << "Normal bake: " << bake_normal_path.string() << '\n';
+    std::cout << "Normal baked texels: " << normal_bake_result.baked_texels << '\n';
+    std::cout << "Normal dilated texels: " << normal_bake_result.dilated_texels << '\n';
+    std::cout << "Normal covered texels: " << normal_bake_result.covered_texels << '\n';
+    std::cout << "Normal dilation passes: " << normal_bake_result.dilation_passes << '\n';
   }
 
   print_timing_summary();

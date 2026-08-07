@@ -12,6 +12,9 @@ if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
   --scene "%~dp0scenes\frame_006_blockout.sdfscene" ^
   --out "%~dp0artifacts\generated\frame_006_blockout_adaptive_unwrapped.obj" ^
   --meshing-mode adaptive_dual_contouring ^
+  --adaptive-normal-dot-threshold 0.985 ^
+  --adaptive-plane-error-ratio 0.035 ^
+  --adaptive-min-plane-error-cells 0.5 ^
   --unwrap-uvs ^
   --uv-resolution 2048 ^
   --uv-padding 8 ^
