@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <vector>
 
@@ -18,6 +19,15 @@ struct TriangleTangentBasis
 {
   Vec3 tangent = {1.0f, 0.0f, 0.0f};
   float handedness = 1.0f;
+};
+
+struct CoveredNormalTexel
+{
+  int triangle_index = -1;
+  float coverage_score = -1.0e30f;
+  float w0 = 0.0f;
+  float w1 = 0.0f;
+  float w2 = 0.0f;
 };
 
 float cross2d(const Vec2 &lhs, const Vec2 &rhs)
@@ -213,18 +223,20 @@ bool bake_sdf_normal_texture(
   const float surface_epsilon = settings.surface_epsilon > 0.0f ? settings.surface_epsilon : 0.05f;
   const std::size_t texel_count = static_cast<std::size_t>(settings.width) * static_cast<std::size_t>(settings.height);
   std::vector<Vec3> normal_values(texel_count, {0.0f, 0.0f, 1.0f});
-  std::vector<float> coverage_scores(texel_count, -1.0e30f);
+  std::vector<CoveredNormalTexel> covered_texels(texel_count);
   std::vector<std::uint8_t> valid(texel_count, 0u);
   std::vector<int> source_texels(texel_count, -1);
+  std::vector<TriangleTangentBasis> triangle_tangent_bases(uv_mesh.triangles.size());
 
-  detail::ProgressScope bake_progress(
+  detail::ProgressScope coverage_progress(
     progress_callback,
-    "Bake normal texels",
+    "Rasterize normal coverage",
     static_cast<std::uint64_t>(uv_mesh.triangles.size()));
   std::uint64_t triangles_done = 0;
 
-  for (const MeshTriangle &triangle : uv_mesh.triangles)
+  for (std::size_t triangle_index = 0; triangle_index < uv_mesh.triangles.size(); ++triangle_index)
   {
+    const MeshTriangle &triangle = uv_mesh.triangles[triangle_index];
     if (triangle.i0 >= uv_mesh.vertices.size() ||
         triangle.i1 >= uv_mesh.vertices.size() ||
         triangle.i2 >= uv_mesh.vertices.size())
@@ -236,6 +248,7 @@ bool bake_sdf_normal_texture(
     const MeshVertex &v1 = uv_mesh.vertices[triangle.i1];
     const MeshVertex &v2 = uv_mesh.vertices[triangle.i2];
     const TriangleTangentBasis tangent_basis = compute_triangle_tangent_basis(v0, v1, v2);
+    triangle_tangent_bases[triangle_index] = tangent_basis;
 
     const Vec2 t0 = to_image_uv(v0.uv0, settings.flip_v);
     const Vec2 t1 = to_image_uv(v1.uv0, settings.flip_v);
@@ -275,38 +288,86 @@ bool bake_sdf_normal_texture(
 
           const std::size_t texel_index = static_cast<std::size_t>(x + y * settings.width);
           const float coverage_score = std::min(w0, std::min(w1, w2));
-          if (valid[texel_index] != 0 && coverage_score <= coverage_scores[texel_index])
+          CoveredNormalTexel &covered_texel = covered_texels[texel_index];
+          if (covered_texel.triangle_index >= 0 && coverage_score <= covered_texel.coverage_score)
           {
             continue;
           }
 
-          const Vec3 low_poly_position = v0.position * w0 + v1.position * w1 + v2.position * w2;
-          const Vec3 shading_normal = normalized(v0.normal * w0 + v1.normal * w1 + v2.normal * w2);
-          const Vec3 surface_position = project_point_to_scene_surface(
-            scene,
-            low_poly_position,
-            surface_epsilon,
-            settings.projection_iterations);
-          const Vec3 sdf_normal = estimate_scene_surface_normal(scene, surface_position, surface_epsilon);
-          normal_values[texel_index] = encode_tangent_space_normal(sdf_normal, shading_normal, tangent_basis);
-          coverage_scores[texel_index] = coverage_score;
-          valid[texel_index] = 1u;
-          source_texels[texel_index] = static_cast<int>(texel_index);
+          covered_texel.triangle_index = static_cast<int>(triangle_index);
+          covered_texel.coverage_score = coverage_score;
+          covered_texel.w0 = w0;
+          covered_texel.w1 = w1;
+          covered_texel.w2 = w2;
         }
       }
     }
 
     ++triangles_done;
-    bake_progress.update(triangles_done);
+    coverage_progress.update(triangles_done);
   }
 
-  bake_progress.finish();
+  coverage_progress.finish();
 
   std::size_t baked_texels = 0;
-  for (std::uint8_t value : valid)
+  for (std::size_t texel_index = 0; texel_index < texel_count; ++texel_index)
   {
-    baked_texels += value != 0 ? 1u : 0u;
+    if (covered_texels[texel_index].triangle_index < 0)
+    {
+      continue;
+    }
+
+    valid[texel_index] = 1u;
+    source_texels[texel_index] = static_cast<int>(texel_index);
+    ++baked_texels;
   }
+
+  detail::ProgressScope shade_progress(
+    progress_callback,
+    "Shade normal texels",
+    static_cast<std::uint64_t>(settings.height));
+  std::atomic<int> shaded_rows = 0;
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 8)
+#endif
+  for (int y = 0; y < settings.height; ++y)
+  {
+    for (int x = 0; x < settings.width; ++x)
+    {
+      const std::size_t texel_index = static_cast<std::size_t>(x + y * settings.width);
+      const CoveredNormalTexel &covered_texel = covered_texels[texel_index];
+      if (covered_texel.triangle_index < 0)
+      {
+        continue;
+      }
+
+      const MeshTriangle &triangle = uv_mesh.triangles[static_cast<std::size_t>(covered_texel.triangle_index)];
+      const MeshVertex &v0 = uv_mesh.vertices[triangle.i0];
+      const MeshVertex &v1 = uv_mesh.vertices[triangle.i1];
+      const MeshVertex &v2 = uv_mesh.vertices[triangle.i2];
+      const float w0 = covered_texel.w0;
+      const float w1 = covered_texel.w1;
+      const float w2 = covered_texel.w2;
+      const Vec3 low_poly_position = v0.position * w0 + v1.position * w1 + v2.position * w2;
+      const Vec3 shading_normal = normalized(v0.normal * w0 + v1.normal * w1 + v2.normal * w2);
+      const Vec3 surface_position = project_point_to_scene_surface(
+        scene,
+        low_poly_position,
+        surface_epsilon,
+        settings.projection_iterations);
+      const Vec3 sdf_normal = estimate_scene_surface_normal(scene, surface_position, surface_epsilon);
+      normal_values[texel_index] = encode_tangent_space_normal(
+        sdf_normal,
+        shading_normal,
+        triangle_tangent_bases[static_cast<std::size_t>(covered_texel.triangle_index)]);
+    }
+
+    const int done = shaded_rows.fetch_add(1) + 1;
+    shade_progress.update(static_cast<std::uint64_t>(done));
+  }
+
+  shade_progress.finish();
 
   const int dilation_pass_count =
     settings.dilation_passes >= 0
@@ -320,8 +381,11 @@ bool bake_sdf_normal_texture(
     std::vector<Vec3> next_normals = normal_values;
     std::vector<std::uint8_t> next_valid = valid;
     std::vector<int> next_sources = source_texels;
-    bool any_change = false;
+    int any_change = 0;
 
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) reduction(|:any_change)
+#endif
     for (int y = 0; y < settings.height; ++y)
     {
       for (int x = 0; x < settings.width; ++x)
@@ -362,23 +426,23 @@ bool bake_sdf_normal_texture(
         next_normals[texel_index] = normal_values[static_cast<std::size_t>(chosen_source)];
         next_valid[texel_index] = 1u;
         next_sources[texel_index] = chosen_source;
-        any_change = true;
+        any_change = 1;
       }
     }
 
     normal_values.swap(next_normals);
     valid.swap(next_valid);
     source_texels.swap(next_sources);
-    if (!any_change)
+    if (any_change == 0)
     {
       break;
     }
   }
 
-  std::size_t covered_texels = 0;
+  std::size_t covered_texel_count = 0;
   for (std::uint8_t value : valid)
   {
-    covered_texels += value != 0 ? 1u : 0u;
+    covered_texel_count += value != 0 ? 1u : 0u;
   }
 
   image->width = settings.width;
@@ -396,8 +460,8 @@ bool bake_sdf_normal_texture(
   if (result != nullptr)
   {
     result->baked_texels = baked_texels;
-    result->covered_texels = covered_texels;
-    result->dilated_texels = covered_texels >= baked_texels ? (covered_texels - baked_texels) : 0;
+    result->covered_texels = covered_texel_count;
+    result->dilated_texels = covered_texel_count >= baked_texels ? (covered_texel_count - baked_texels) : 0;
     result->dilation_passes = dilation_pass_count;
   }
 
