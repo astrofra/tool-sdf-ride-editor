@@ -78,9 +78,9 @@ struct BuildSettings
   Aabb bounds;
   float cell_size = 1.0f;
   MeshingMode meshing_mode = MeshingMode::MarchingTetrahedra;
-  float adaptive_normal_dot_threshold = 0.985f;
-  float adaptive_plane_error_ratio = 0.035f;
-  float adaptive_min_plane_error_in_cells = 0.5f;
+  float adaptive_normal_dot_threshold = 0.9925f;
+  float adaptive_plane_error_ratio = 0.02f;
+  float adaptive_min_plane_error_in_cells = 0.35f;
 };
 
 const char *meshing_mode_name(MeshingMode mode);
