@@ -3,6 +3,7 @@
 ## Status
 
 Planned and first milestone implemented on **August 6, 2026**.
+Chart-debug and fragmentation instrumentation added on **August 7, 2026**.
 
 This note records the current design and technical decisions for adding automatic UV unwrapping to the SDF mesh pipeline.
 
@@ -132,14 +133,46 @@ The current unwrap path supports:
 - one generated mesh at a time;
 - one UV set in `uv0`;
 - OBJ export of the unwrapped result;
-- CLI-driven atlas resolution and padding control.
+- CLI-driven atlas resolution and padding control;
+- chart-colored UV atlas debug images;
+- unwrap fragmentation statistics in the CLI output.
 
 The current unwrap path does **not** yet support:
 
 - multiple atlas pages in export;
-- UV layout raster debug images;
 - seam padding or bake dilation;
 - UV-aware AO baking.
+
+### Current Fragmentation Instrumentation
+
+The unwrap stage now reports additional chart-fragmentation metrics.
+
+The current CLI output includes:
+
+- chart count;
+- chart triangles min / average / max;
+- single-triangle chart count;
+- chart texels min / average / max;
+- occupied chart texel count;
+- padding texel count.
+
+This is intended to make unwrap tuning less blind before deeper mesher changes happen.
+
+### Current UV Chart Debug Output
+
+The unwrap path can now also emit a chart-colored atlas debug image.
+
+The current CLI switch is:
+
+- `--debug-uv-charts PATH`
+
+The output uses deterministic per-chart colors and distinguishes padding texels visually.
+
+This is meant for:
+
+- quick inspection of island count and packing;
+- checking whether neighboring colors correspond to unrelated islands;
+- understanding whether unwrap fragmentation or bake settings are the dominant issue.
 
 ---
 

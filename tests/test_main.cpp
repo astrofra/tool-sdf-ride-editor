@@ -405,6 +405,55 @@ void test_uv_unwrap_welded_input_reduces_topology_size()
     "welded uv unwrap should reduce the exported triangle count on the sample scene");
 }
 
+void test_uv_unwrap_chart_debug_image_and_fragmentation_stats()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 8.0f;
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  sdf::UvUnwrapSettings settings;
+  settings.resolution = 256;
+  settings.padding = 4;
+
+  sdf::Mesh unwrapped_mesh;
+  sdf::UvUnwrapResult result;
+  sdf::Rgb8Image chart_debug_image;
+  const bool unwrap_ok = sdf::unwrap_mesh_uvs(
+    build.mesh,
+    settings,
+    &unwrapped_mesh,
+    &result,
+    &error_message,
+    {},
+    &chart_debug_image);
+
+  expect_true(unwrap_ok, "uv unwrap with chart debug image should succeed");
+  expect_true(chart_debug_image.width == static_cast<int>(result.atlas_width), "chart debug image should match atlas width");
+  expect_true(chart_debug_image.height == static_cast<int>(result.atlas_height), "chart debug image should match atlas height");
+  expect_true(
+    chart_debug_image.pixels.size() == static_cast<std::size_t>(chart_debug_image.width * chart_debug_image.height * 3),
+    "chart debug image should contain RGB pixels");
+  expect_true(result.min_chart_triangle_count > 0, "chart triangle stats should be populated");
+  expect_true(result.max_chart_triangle_count >= result.min_chart_triangle_count, "chart triangle min/max should be ordered");
+  expect_true(result.average_chart_triangle_count >= static_cast<float>(result.min_chart_triangle_count), "average chart triangle count should be sensible");
+  expect_true(result.single_triangle_chart_count <= result.chart_count, "single-triangle chart count should stay bounded");
+  expect_true(result.chart_texel_count > 0, "chart texel coverage should be populated");
+  expect_true(result.max_chart_texel_count >= result.min_chart_texel_count, "chart texel min/max should be ordered");
+  expect_true(result.average_chart_texel_count > 0.0f, "average chart texel count should be populated");
+
+  std::size_t non_black_pixels = 0;
+  for (unsigned char value : chart_debug_image.pixels)
+  {
+    non_black_pixels += value != 0 ? 1u : 0u;
+  }
+  expect_true(non_black_pixels > 0, "chart debug image should contain visible chart colors");
+}
+
 void test_ao_bake_writes_png()
 {
   sdf::SceneFile scene_file;
@@ -537,6 +586,7 @@ int main()
     test_debug_render_writes_png();
     test_uv_unwrap_generates_normalized_uvs();
     test_uv_unwrap_welded_input_reduces_topology_size();
+    test_uv_unwrap_chart_debug_image_and_fragmentation_stats();
     test_ao_bake_writes_png();
     test_invalid_scene_file_reports_an_error();
     test_invalid_modifier_target_reports_an_error();

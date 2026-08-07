@@ -86,6 +86,7 @@ void print_usage()
   std::cout
     << "Usage: sdf_cli [--scene PATH] [--out PATH] [--cell-size VALUE]\n"
     << "               [--unwrap-uvs] [--uv-resolution N] [--uv-padding N]\n"
+    << "               [--debug-uv-charts PATH]\n"
     << "               [--bake-ao PATH] [--bake-ao-samples N] [--bake-ao-min-samples N]\n"
     << "               [--bake-ao-error-threshold F] [--bake-ao-max-distance F]\n"
     << "               [--bake-ao-denoise-passes N] [--bake-ao-denoise-radius N]\n"
@@ -103,6 +104,7 @@ int main(int argc, char **argv)
   std::filesystem::path scene_path = default_scene_path();
   std::filesystem::path output_path = "artifacts/generated/frame_006_blockout.obj";
   std::filesystem::path debug_render_path;
+  std::filesystem::path debug_uv_charts_path;
   std::filesystem::path bake_ao_path;
   bool has_cell_size_override = false;
   float cell_size_override = 0.0f;
@@ -136,6 +138,12 @@ int main(int argc, char **argv)
     if (argument == "--bake-ao" && index + 1 < argc)
     {
       bake_ao_path = argv[++index];
+      continue;
+    }
+
+    if (argument == "--debug-uv-charts" && index + 1 < argc)
+    {
+      debug_uv_charts_path = argv[++index];
       continue;
     }
 
@@ -294,7 +302,8 @@ int main(int argc, char **argv)
     sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings, progress_callback);
   sdf::Mesh export_mesh = build.mesh;
   sdf::UvUnwrapResult unwrap_result;
-  const bool needs_uv_unwrap = unwrap_uvs || !bake_ao_path.empty();
+  sdf::Rgb8Image uv_chart_debug_image;
+  const bool needs_uv_unwrap = unwrap_uvs || !bake_ao_path.empty() || !debug_uv_charts_path.empty();
 
   sdf::ObjWriteOptions obj_write_options;
   obj_write_options.object_name = scene_file.scene.name;
@@ -312,9 +321,19 @@ int main(int argc, char **argv)
           &export_mesh,
           &unwrap_result,
           &error_message,
-          progress_callback))
+          progress_callback,
+          !debug_uv_charts_path.empty() ? &uv_chart_debug_image : nullptr))
     {
       std::cerr << "UV unwrap failed: " << error_message << '\n';
+      return 1;
+    }
+  }
+
+  if (!debug_uv_charts_path.empty())
+  {
+    if (!sdf::write_png_rgb8(uv_chart_debug_image, debug_uv_charts_path, &error_message))
+    {
+      std::cerr << "UV chart debug image write failed: " << error_message << '\n';
       return 1;
     }
   }
@@ -387,8 +406,23 @@ int main(int argc, char **argv)
     std::cout << "UV atlas resolution: " << unwrap_result.atlas_width << 'x' << unwrap_result.atlas_height << '\n';
     std::cout << "UV atlas utilization: " << unwrap_result.utilization * 100.0f << "%\n";
     std::cout << "UV texels per unit: " << unwrap_result.texels_per_unit << '\n';
+    std::cout << "UV chart triangles min/avg/max: "
+              << unwrap_result.min_chart_triangle_count << " / "
+              << unwrap_result.average_chart_triangle_count << " / "
+              << unwrap_result.max_chart_triangle_count << '\n';
+    std::cout << "UV single-triangle charts: " << unwrap_result.single_triangle_chart_count << '\n';
+    std::cout << "UV chart texels min/avg/max: "
+              << unwrap_result.min_chart_texel_count << " / "
+              << unwrap_result.average_chart_texel_count << " / "
+              << unwrap_result.max_chart_texel_count << '\n';
+    std::cout << "UV occupied texels: " << unwrap_result.chart_texel_count << '\n';
+    std::cout << "UV padding texels: " << unwrap_result.padding_texel_count << '\n';
   }
   std::cout << "OBJ: " << output_path.string() << '\n';
+  if (!debug_uv_charts_path.empty())
+  {
+    std::cout << "UV chart debug image: " << debug_uv_charts_path.string() << '\n';
+  }
   if (!debug_render_path.empty())
   {
     std::cout << "Debug image: " << debug_render_path.string() << '\n';

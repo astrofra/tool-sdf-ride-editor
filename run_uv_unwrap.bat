@@ -12,7 +12,8 @@ if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
   --out "%~dp0artifacts\generated\frame_006_blockout_unwrapped.obj" ^
   --unwrap-uvs ^
   --uv-resolution 1024 ^
-  --uv-padding 4
+  --uv-padding 8 ^
+  --debug-uv-charts "%~dp0artifacts\generated\frame_006_blockout_uv_charts.png"
 if errorlevel 1 goto :fail
 
 popd

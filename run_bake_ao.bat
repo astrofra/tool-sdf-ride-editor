@@ -19,7 +19,7 @@ if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
   --bake-ao-error-threshold 0.03 ^
   --bake-ao-max-distance 25.0 ^
   --bake-ao-denoise-passes 2 ^
-  --bake-ao-denoise-radius 4
+  --bake-ao-denoise-radius 2
 if errorlevel 1 goto :fail
 
 popd

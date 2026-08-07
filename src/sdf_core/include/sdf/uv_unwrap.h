@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 
+#include "sdf/image_write.h"
 #include "sdf/mesh.h"
 #include "sdf/progress.h"
 
@@ -39,6 +40,15 @@ struct UvUnwrapResult
   std::uint32_t chart_count = 0;
   std::size_t vertex_count = 0;
   std::size_t triangle_count = 0;
+  std::size_t min_chart_triangle_count = 0;
+  std::size_t max_chart_triangle_count = 0;
+  std::size_t single_triangle_chart_count = 0;
+  std::size_t chart_texel_count = 0;
+  std::size_t padding_texel_count = 0;
+  std::size_t min_chart_texel_count = 0;
+  std::size_t max_chart_texel_count = 0;
+  float average_chart_triangle_count = 0.0f;
+  float average_chart_texel_count = 0.0f;
   float texels_per_unit = 0.0f;
   float utilization = 0.0f;
 };
@@ -49,6 +59,7 @@ bool unwrap_mesh_uvs(
   Mesh *output_mesh,
   UvUnwrapResult *result = nullptr,
   std::string *error_message = nullptr,
-  const ProgressCallback &progress_callback = {});
+  const ProgressCallback &progress_callback = {},
+  Rgb8Image *chart_debug_image = nullptr);
 
 }  // namespace sdf

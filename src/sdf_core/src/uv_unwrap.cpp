@@ -1,7 +1,9 @@
 #include "sdf/uv_unwrap.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -33,6 +35,89 @@ bool fail(std::string *error_message, const std::string &message)
     *error_message = message;
   }
   return false;
+}
+
+std::uint32_t hash_u32(std::uint32_t value)
+{
+  value ^= value >> 16;
+  value *= 0x7feb352dU;
+  value ^= value >> 15;
+  value *= 0x846ca68bU;
+  value ^= value >> 16;
+  return value;
+}
+
+std::array<unsigned char, 3> chart_color(std::uint32_t chart_index)
+{
+  const std::uint32_t hash = hash_u32(chart_index + 0x9e3779b9u);
+  return {{
+    static_cast<unsigned char>(96u + ((hash >> 0) & 0x7fu)),
+    static_cast<unsigned char>(96u + ((hash >> 8) & 0x7fu)),
+    static_cast<unsigned char>(96u + ((hash >> 16) & 0x7fu))
+  }};
+}
+
+unsigned char mix_byte(unsigned char lhs, unsigned char rhs, float rhs_weight)
+{
+  const float lhs_weight = 1.0f - rhs_weight;
+  const float value =
+    static_cast<float>(lhs) * lhs_weight +
+    static_cast<float>(rhs) * rhs_weight;
+  return static_cast<unsigned char>(std::clamp(value, 0.0f, 255.0f) + 0.5f);
+}
+
+bool build_chart_debug_image(
+  const xatlas::Atlas &atlas,
+  Rgb8Image *chart_debug_image,
+  std::string *error_message)
+{
+  if (chart_debug_image == nullptr)
+  {
+    return true;
+  }
+
+  if (atlas.image == nullptr || atlas.width == 0 || atlas.height == 0)
+  {
+    return fail(error_message, "uv chart debug image requires a populated xatlas image");
+  }
+
+  chart_debug_image->width = static_cast<int>(atlas.width);
+  chart_debug_image->height = static_cast<int>(atlas.height);
+  chart_debug_image->pixels.assign(
+    static_cast<std::size_t>(atlas.width) * static_cast<std::size_t>(atlas.height) * 3u,
+    0u);
+
+  const std::size_t texel_count = static_cast<std::size_t>(atlas.width) * static_cast<std::size_t>(atlas.height);
+  for (std::size_t texel_index = 0; texel_index < texel_count; ++texel_index)
+  {
+    const std::uint32_t data = atlas.image[texel_index];
+    unsigned char *rgb = &chart_debug_image->pixels[texel_index * 3u];
+    if ((data & xatlas::kImageHasChartIndexBit) == 0)
+    {
+      rgb[0] = rgb[1] = rgb[2] = 0u;
+      continue;
+    }
+
+    const std::array<unsigned char, 3> base_color = chart_color(data & xatlas::kImageChartIndexMask);
+    rgb[0] = base_color[0];
+    rgb[1] = base_color[1];
+    rgb[2] = base_color[2];
+
+    if ((data & xatlas::kImageIsPaddingBit) != 0)
+    {
+      rgb[0] = mix_byte(rgb[0], 32u, 0.55f);
+      rgb[1] = mix_byte(rgb[1], 64u, 0.55f);
+      rgb[2] = mix_byte(rgb[2], 224u, 0.55f);
+    }
+    else if ((data & xatlas::kImageIsBilinearBit) != 0)
+    {
+      rgb[0] = mix_byte(rgb[0], 32u, 0.45f);
+      rgb[1] = mix_byte(rgb[1], 224u, 0.45f);
+      rgb[2] = mix_byte(rgb[2], 48u, 0.45f);
+    }
+  }
+
+  return true;
 }
 
 const char *progress_stage_name(xatlas::ProgressCategory category)
@@ -149,6 +234,75 @@ bool resolve_triangle_chart_id(
 
   *chart_id = resolved;
   return true;
+}
+
+void populate_chart_triangle_stats(const xatlas::Mesh &atlas_mesh, UvUnwrapResult *result)
+{
+  if (result == nullptr || atlas_mesh.chartCount == 0)
+  {
+    return;
+  }
+
+  std::size_t total_chart_triangles = 0;
+  result->min_chart_triangle_count = std::numeric_limits<std::size_t>::max();
+  result->max_chart_triangle_count = 0;
+  result->single_triangle_chart_count = 0;
+  for (std::uint32_t chart_index = 0; chart_index < atlas_mesh.chartCount; ++chart_index)
+  {
+    const std::size_t triangle_count = atlas_mesh.chartArray[chart_index].faceCount;
+    result->min_chart_triangle_count = std::min(result->min_chart_triangle_count, triangle_count);
+    result->max_chart_triangle_count = std::max(result->max_chart_triangle_count, triangle_count);
+    result->single_triangle_chart_count += triangle_count == 1 ? 1u : 0u;
+    total_chart_triangles += triangle_count;
+  }
+
+  result->average_chart_triangle_count =
+    static_cast<float>(total_chart_triangles) / static_cast<float>(atlas_mesh.chartCount);
+}
+
+void populate_chart_texel_stats(const xatlas::Atlas &atlas, UvUnwrapResult *result)
+{
+  if (result == nullptr || atlas.image == nullptr || result->chart_count == 0)
+  {
+    return;
+  }
+
+  std::vector<std::size_t> chart_texel_counts(result->chart_count, 0u);
+  const std::size_t texel_count = static_cast<std::size_t>(atlas.width) * static_cast<std::size_t>(atlas.height);
+  for (std::size_t texel_index = 0; texel_index < texel_count; ++texel_index)
+  {
+    const std::uint32_t data = atlas.image[texel_index];
+    if ((data & xatlas::kImageHasChartIndexBit) == 0)
+    {
+      continue;
+    }
+
+    if ((data & xatlas::kImageIsPaddingBit) != 0)
+    {
+      ++result->padding_texel_count;
+      continue;
+    }
+
+    const std::uint32_t chart_index = data & xatlas::kImageChartIndexMask;
+    if (chart_index >= chart_texel_counts.size())
+    {
+      continue;
+    }
+
+    ++chart_texel_counts[chart_index];
+    ++result->chart_texel_count;
+  }
+
+  result->min_chart_texel_count = std::numeric_limits<std::size_t>::max();
+  result->max_chart_texel_count = 0;
+  for (std::size_t texel_count_for_chart : chart_texel_counts)
+  {
+    result->min_chart_texel_count = std::min(result->min_chart_texel_count, texel_count_for_chart);
+    result->max_chart_texel_count = std::max(result->max_chart_texel_count, texel_count_for_chart);
+  }
+
+  result->average_chart_texel_count =
+    static_cast<float>(result->chart_texel_count) / static_cast<float>(result->chart_count);
 }
 
 QuantizedPositionKey quantize_position(const Vec3 &position, float epsilon)
@@ -291,7 +445,8 @@ bool unwrap_mesh_uvs(
   Mesh *output_mesh,
   UvUnwrapResult *result,
   std::string *error_message,
-  const ProgressCallback &progress_callback)
+  const ProgressCallback &progress_callback,
+  Rgb8Image *chart_debug_image)
 {
   if (output_mesh == nullptr)
   {
@@ -358,6 +513,7 @@ bool unwrap_mesh_uvs(
   pack_options.bilinear = settings.bilinear;
   pack_options.blockAlign = settings.block_align;
   pack_options.bruteForce = settings.brute_force;
+  pack_options.createImage = result != nullptr || chart_debug_image != nullptr;
   pack_options.rotateChartsToAxis = settings.rotate_charts_to_axis;
   pack_options.rotateCharts = settings.rotate_charts;
 
@@ -450,6 +606,13 @@ bool unwrap_mesh_uvs(
     result->triangle_count = output_mesh->triangles.size();
     result->texels_per_unit = atlas->texelsPerUnit;
     result->utilization = atlas->utilization != nullptr ? atlas->utilization[0] : 0.0f;
+    populate_chart_triangle_stats(atlas_mesh, result);
+    populate_chart_texel_stats(*atlas, result);
+  }
+
+  if (!build_chart_debug_image(*atlas, chart_debug_image, error_message))
+  {
+    return false;
   }
 
   if (error_message != nullptr)
