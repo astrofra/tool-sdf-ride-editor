@@ -222,6 +222,9 @@ bool bake_ambient_occlusion_texture(
   }
 
   const std::size_t texel_count = static_cast<std::size_t>(settings.width) * static_cast<std::size_t>(settings.height);
+  const int total_texels = settings.width * settings.height;
+  std::vector<Vec3> surface_positions(texel_count);
+  std::vector<Vec3> surface_normals(texel_count);
   std::vector<float> ao_values(texel_count, 0.0f);
   std::vector<float> coverage_scores(texel_count, -1.0e30f);
   std::vector<std::uint8_t> valid(texel_count, 0u);
@@ -291,28 +294,11 @@ bool bake_ambient_occlusion_texture(
 
         const Vec3 position = v0.position * w0 + v1.position * w1 + v2.position * w2;
         const Vec3 shading_normal = normalized(v0.normal * w0 + v1.normal * w1 + v2.normal * w2);
-        const std::uint32_t texel_seed = hash_u32(
-          settings.seed ^
-          static_cast<std::uint32_t>(x * 1973) ^
-          static_cast<std::uint32_t>(y * 9277) ^
-          static_cast<std::uint32_t>(triangle_index * 26699));
-        int used_sample_count = 0;
-        const float ao = estimate_ambient_occlusion(
-          ray_scene,
-          position,
-          shading_normal,
-          settings.min_ao_samples,
-          settings.max_ao_samples,
-          settings.ao_error_threshold,
-          settings.ao_max_distance,
-          texel_seed,
-          &used_sample_count);
-
-        ao_values[texel_index] = ao;
+        surface_positions[texel_index] = position;
+        surface_normals[texel_index] = shading_normal;
         coverage_scores[texel_index] = coverage_score;
         valid[texel_index] = 1u;
         source_texels[texel_index] = static_cast<int>(texel_index);
-        ao_ray_count += static_cast<std::size_t>(std::max(used_sample_count, 0));
       }
     }
   }
@@ -321,6 +307,36 @@ bool bake_ambient_occlusion_texture(
   for (std::uint8_t value : valid)
   {
     baked_texels += value != 0 ? 1u : 0u;
+  }
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 64) reduction(+:ao_ray_count)
+#endif
+  for (int texel_index = 0; texel_index < total_texels; ++texel_index)
+  {
+    if (valid[static_cast<std::size_t>(texel_index)] == 0)
+    {
+      continue;
+    }
+
+    const int x = texel_index % settings.width;
+    const int y = texel_index / settings.width;
+    const std::uint32_t texel_seed = hash_u32(
+      settings.seed ^
+      static_cast<std::uint32_t>(x * 1973) ^
+      static_cast<std::uint32_t>(y * 9277));
+    int used_sample_count = 0;
+    ao_values[static_cast<std::size_t>(texel_index)] = estimate_ambient_occlusion(
+      ray_scene,
+      surface_positions[static_cast<std::size_t>(texel_index)],
+      surface_normals[static_cast<std::size_t>(texel_index)],
+      settings.min_ao_samples,
+      settings.max_ao_samples,
+      settings.ao_error_threshold,
+      settings.ao_max_distance,
+      texel_seed,
+      &used_sample_count);
+    ao_ray_count += static_cast<std::size_t>(std::max(used_sample_count, 0));
   }
 
   const int dilation_pass_count =
@@ -335,8 +351,11 @@ bool bake_ambient_occlusion_texture(
     std::vector<float> next_ao = ao_values;
     std::vector<std::uint8_t> next_valid = valid;
     std::vector<int> next_sources = source_texels;
-    bool any_change = false;
+    int any_change = 0;
 
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static) reduction(|:any_change)
+#endif
     for (int y = 0; y < settings.height; ++y)
     {
       for (int x = 0; x < settings.width; ++x)
@@ -377,14 +396,14 @@ bool bake_ambient_occlusion_texture(
         next_ao[texel_index] = ao_values[static_cast<std::size_t>(chosen_source)];
         next_valid[texel_index] = 1u;
         next_sources[texel_index] = chosen_source;
-        any_change = true;
+        any_change = 1;
       }
     }
 
     ao_values.swap(next_ao);
     valid.swap(next_valid);
     source_texels.swap(next_sources);
-    if (!any_change)
+    if (any_change == 0)
     {
       break;
     }

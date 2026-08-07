@@ -147,6 +147,21 @@ Examples:
 
 This intentionally favors robust island padding over preserving a black background around charts.
 
+### Current CPU Parallelism Policy
+
+As of **August 7, 2026**, the baker has a first `OpenMP`-friendly phase split:
+
+1. UV rasterization into per-texel surface samples;
+2. AO evaluation per valid texel;
+3. iterative padding / fill;
+4. final image write.
+
+The current implementation parallelizes phases `2` and `3` when `OpenMP` is available at configure time.
+
+The raster stage remains serial for now because it still resolves competing texel ownership through coverage-score comparison.
+
+This means the current implementation is faster, but it is not yet the final performance architecture.
+
 ---
 
 ## Current Constraints
@@ -204,11 +219,19 @@ The following remain intentionally deferred:
 - AO supersampling;
 - chart debug images;
 - seam-aware blur or resolve;
-- OpenMP-based parallelization of texel baking loops;
+- island-aware denoise based on chart identity;
+- tile-, bucket-, or chart-based parallel UV rasterization;
 - source-aware nearest-fill heuristics beyond simple neighborhood propagation;
 - packed bake outputs;
 - bent-normal or curvature baking;
-- parallel bake execution.
+- broader performance work beyond the current OpenMP phase split.
+
+### Related Notes
+
+The current deferred design notes for the next quality and performance steps live in:
+
+- `documentation/Island_Aware_AO_Denoise_Future_Plan.md`
+- `documentation/OpenMP_Acceleration_Study.md`
 
 ---
 

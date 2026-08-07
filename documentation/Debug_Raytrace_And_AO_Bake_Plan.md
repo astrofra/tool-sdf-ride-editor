@@ -299,17 +299,30 @@ The current design decisions are:
 - defer UV-space AO baking until unwrap exists;
 - keep the first camera setup fixed, deterministic, and orthographic.
 
-### Performance Improvement Note
+### Performance Note
 
-A later performance pass should evaluate **OpenMP** for CPU-side rendering workloads in this repository.
+A first **OpenMP** acceleration pass was implemented on **August 7, 2026**.
 
-The main candidates are:
+The current implementation now parallelizes:
 
 - the debug raytracer image loop;
-- AO hemisphere sampling loops;
-- UV-space AO bake texel loops.
+- UV-space AO bake texel evaluation;
+- UV-space AO bake padding / fill passes.
 
-This should remain a later optimization pass rather than a prerequisite for functional work, but it is now a recorded target improvement.
+The main heavy loop that still remains intentionally serial is:
+
+- UV triangle rasterization into the bake atlas.
+
+This is deliberate.
+
+That raster stage still has texel ownership conflicts and is not a safe drop-in parallel loop without a more explicit tile, bucket, or chart-partition strategy.
+
+### Related Notes
+
+For the follow-up design details, see:
+
+- `documentation/OpenMP_Acceleration_Study.md`
+- `documentation/Island_Aware_AO_Denoise_Future_Plan.md`
 
 ### Current Demo Baseline
 

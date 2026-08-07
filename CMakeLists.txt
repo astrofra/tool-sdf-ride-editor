@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.30)
 project(tool_sdf_ride_editor LANGUAGES CXX)
 
 option(SDF_BUILD_TESTS "Build sdf generator tests" ON)
+option(SDF_ENABLE_OPENMP "Enable OpenMP acceleration for CPU-heavy loops" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -29,6 +30,10 @@ add_library(sdf_core
   vendor/xatlas/xatlas.cpp
 )
 
+if(SDF_ENABLE_OPENMP)
+  find_package(OpenMP QUIET)
+endif()
+
 target_include_directories(sdf_core
   PUBLIC
     src/sdf_core/include
@@ -50,6 +55,10 @@ else()
 endif()
 
 target_compile_features(sdf_core PUBLIC cxx_std_20)
+
+if(SDF_ENABLE_OPENMP AND OpenMP_CXX_FOUND)
+  target_link_libraries(sdf_core PRIVATE OpenMP::OpenMP_CXX)
+endif()
 
 set_target_properties(sdf_core PROPERTIES
   ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"

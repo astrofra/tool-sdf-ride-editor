@@ -252,6 +252,9 @@ bool render_debug_image(
   image->height = settings.height;
   image->pixels.assign(static_cast<std::size_t>(settings.width * settings.height * 3), 0u);
 
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 8)
+#endif
   for (int y = 0; y < settings.height; ++y)
   {
     const float v = settings.height > 1 ? static_cast<float>(y) / static_cast<float>(settings.height - 1) : 0.5f;
