@@ -1,8 +1,12 @@
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "sdf/bake_ao.h"
 #include "sdf/debug_render.h"
@@ -46,28 +50,137 @@ bool parse_debug_mode(const std::string &text, sdf::DebugRenderMode *mode)
   return false;
 }
 
+class TimingSummary
+{
+public:
+  void add_sample(const std::string &name, double seconds)
+  {
+    if (name.empty())
+    {
+      return;
+    }
+
+    std::scoped_lock lock(mutex_);
+    const auto it = indices_.find(name);
+    if (it == indices_.end())
+    {
+      indices_.emplace(name, entries_.size());
+      entries_.push_back(Entry{name, seconds, 1u});
+      return;
+    }
+
+    Entry &entry = entries_[it->second];
+    entry.seconds += seconds;
+    entry.occurrences += 1u;
+  }
+
+  void print(const std::string &header) const
+  {
+    std::scoped_lock lock(mutex_);
+    if (entries_.empty())
+    {
+      return;
+    }
+
+    const std::ios::fmtflags old_flags = std::cout.flags();
+    const std::streamsize old_precision = std::cout.precision();
+
+    std::cout << header << '\n';
+    std::cout << std::fixed << std::setprecision(3);
+
+    double total = 0.0;
+    for (const Entry &entry : entries_)
+    {
+      std::cout << "  " << entry.name << ": " << entry.seconds << " s";
+      if (entry.occurrences > 1u)
+      {
+        std::cout << " (" << entry.occurrences << "x)";
+      }
+      std::cout << '\n';
+      total += entry.seconds;
+    }
+
+    std::cout << "  Total: " << total << " s\n";
+    std::cout.flags(old_flags);
+    std::cout.precision(old_precision);
+  }
+
+private:
+  struct Entry
+  {
+    std::string name;
+    double seconds = 0.0;
+    std::size_t occurrences = 0;
+  };
+
+  mutable std::mutex mutex_;
+  std::vector<Entry> entries_;
+  std::unordered_map<std::string, std::size_t> indices_;
+};
+
+double elapsed_seconds(
+  const std::chrono::steady_clock::time_point &start,
+  const std::chrono::steady_clock::time_point &end = std::chrono::steady_clock::now())
+{
+  return std::chrono::duration<double>(end - start).count();
+}
+
+class ScopedPhaseTimer
+{
+public:
+  ScopedPhaseTimer(TimingSummary *summary, std::string name)
+    : summary_(summary), name_(std::move(name)), start_(std::chrono::steady_clock::now())
+  {
+  }
+
+  ~ScopedPhaseTimer()
+  {
+    if (summary_ != nullptr)
+    {
+      summary_->add_sample(name_, elapsed_seconds(start_));
+    }
+  }
+
+private:
+  TimingSummary *summary_ = nullptr;
+  std::string name_;
+  std::chrono::steady_clock::time_point start_;
+};
+
 class ConsoleProgressPrinter
 {
 public:
   void print(const sdf::ProgressUpdate &update)
   {
     std::scoped_lock lock(mutex_);
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 
     const bool stage_changed = current_stage_ != update.stage;
+    if (stage_changed)
+    {
+      finish_current_stage_locked(now);
+    }
+
     if (stage_changed && line_open_)
     {
       std::cout << '\n';
       line_open_ = false;
     }
 
-    current_stage_ = std::string(update.stage);
+    if (stage_changed)
+    {
+      current_stage_ = std::string(update.stage);
+      current_stage_start_ = now;
+      has_current_stage_ = true;
+    }
+
     std::cout << '\r' << "[progress] " << current_stage_ << ": " << update.percent << '%';
     std::cout.flush();
 
     if (update.completed >= update.total)
     {
       std::cout << '\n';
-      current_stage_.clear();
+      finish_current_stage_locked(now);
       line_open_ = false;
       return;
     }
@@ -75,9 +188,41 @@ public:
     line_open_ = true;
   }
 
+  void finish_active_stage()
+  {
+    std::scoped_lock lock(mutex_);
+    finish_current_stage_locked(std::chrono::steady_clock::now());
+    if (line_open_)
+    {
+      std::cout << '\n';
+      line_open_ = false;
+    }
+  }
+
+  void print_timing_summary()
+  {
+    finish_active_stage();
+    stage_timings_.print("Progress Stage Timings");
+  }
+
 private:
+  void finish_current_stage_locked(const std::chrono::steady_clock::time_point &now)
+  {
+    if (!has_current_stage_)
+    {
+      return;
+    }
+
+    stage_timings_.add_sample(current_stage_, elapsed_seconds(current_stage_start_, now));
+    current_stage_.clear();
+    has_current_stage_ = false;
+  }
+
   std::mutex mutex_;
+  TimingSummary stage_timings_;
   std::string current_stage_;
+  std::chrono::steady_clock::time_point current_stage_start_;
+  bool has_current_stage_ = false;
   bool line_open_ = false;
 };
 
@@ -104,6 +249,7 @@ void print_usage()
 
 int main(int argc, char **argv)
 {
+  const std::chrono::steady_clock::time_point wall_clock_start = std::chrono::steady_clock::now();
   std::filesystem::path scene_path = default_scene_path();
   std::filesystem::path output_path = "artifacts/generated/frame_006_blockout.obj";
   std::filesystem::path debug_render_path;
@@ -115,6 +261,8 @@ int main(int argc, char **argv)
   sdf::DebugRenderSettings debug_settings;
   sdf::UvUnwrapSettings unwrap_settings;
   sdf::AoBakeSettings bake_settings;
+  TimingSummary phase_timings;
+  ConsoleProgressPrinter progress_printer;
 
   for (int index = 1; index < argc; ++index)
   {
@@ -281,12 +429,40 @@ int main(int argc, char **argv)
     return 1;
   }
 
+  const auto print_timing_summary =
+    [&]()
+    {
+      progress_printer.finish_active_stage();
+      std::cout << "Timing Summary\n";
+      phase_timings.print("Phase Timings");
+      progress_printer.print_timing_summary();
+
+      const std::ios::fmtflags old_flags = std::cout.flags();
+      const std::streamsize old_precision = std::cout.precision();
+      std::cout << std::fixed << std::setprecision(3);
+      std::cout << "Wall Time: " << elapsed_seconds(wall_clock_start) << " s\n";
+      std::cout.flags(old_flags);
+      std::cout.precision(old_precision);
+    };
+
+  const auto fail_with_timings =
+    [&](const std::string &message)
+    {
+      std::cerr << message << '\n';
+      print_timing_summary();
+      return 1;
+    };
+
   sdf::SceneFile scene_file;
   std::string error_message;
-  if (!sdf::load_scene_file(scene_path, &scene_file, &error_message))
+  bool scene_loaded = false;
   {
-    std::cerr << "Scene load failed: " << error_message << '\n';
-    return 1;
+    ScopedPhaseTimer phase_timer(&phase_timings, "Load scene file");
+    scene_loaded = sdf::load_scene_file(scene_path, &scene_file, &error_message);
+  }
+  if (!scene_loaded)
+  {
+    return fail_with_timings("Scene load failed: " + error_message);
   }
 
   if (has_cell_size_override)
@@ -294,15 +470,18 @@ int main(int argc, char **argv)
     scene_file.build_settings.cell_size = cell_size_override;
   }
 
-  ConsoleProgressPrinter progress_printer;
   const sdf::ProgressCallback progress_callback =
     [&](const sdf::ProgressUpdate &update)
     {
       progress_printer.print(update);
     };
 
-  const sdf::SceneBuildResult build =
-    sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings, progress_callback);
+  sdf::SceneBuildResult build;
+  {
+    ScopedPhaseTimer phase_timer(&phase_timings, "Build scene mesh");
+    build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings, progress_callback);
+  }
+
   sdf::Mesh export_mesh = build.mesh;
   sdf::UvUnwrapResult unwrap_result;
   sdf::Rgb8Image uv_chart_debug_image;
@@ -318,44 +497,64 @@ int main(int argc, char **argv)
   sdf::AoBakeResult bake_result;
   if (needs_uv_unwrap)
   {
-    if (!sdf::unwrap_mesh_uvs(
-          build.mesh,
-          unwrap_settings,
-          &export_mesh,
-          &unwrap_result,
-          &error_message,
-          progress_callback,
-          !debug_uv_charts_path.empty() ? &uv_chart_debug_image : nullptr))
+    bool unwrap_ok = false;
     {
-      std::cerr << "UV unwrap failed: " << error_message << '\n';
-      return 1;
+      ScopedPhaseTimer phase_timer(&phase_timings, "UV unwrap");
+      unwrap_ok = sdf::unwrap_mesh_uvs(
+        build.mesh,
+        unwrap_settings,
+        &export_mesh,
+        &unwrap_result,
+        &error_message,
+        progress_callback,
+        !debug_uv_charts_path.empty() ? &uv_chart_debug_image : nullptr);
+    }
+    if (!unwrap_ok)
+    {
+      return fail_with_timings("UV unwrap failed: " + error_message);
     }
   }
 
   if (!debug_uv_charts_path.empty())
   {
-    if (!sdf::write_png_rgb8(uv_chart_debug_image, debug_uv_charts_path, &error_message))
+    bool chart_write_ok = false;
     {
-      std::cerr << "UV chart debug image write failed: " << error_message << '\n';
-      return 1;
+      ScopedPhaseTimer phase_timer(&phase_timings, "Write UV chart debug image");
+      chart_write_ok = sdf::write_png_rgb8(uv_chart_debug_image, debug_uv_charts_path, &error_message);
+    }
+    if (!chart_write_ok)
+    {
+      return fail_with_timings("UV chart debug image write failed: " + error_message);
     }
   }
 
-  const sdf::RayScene ray_scene = sdf::build_ray_scene(build.mesh, progress_callback);
+  sdf::RayScene ray_scene;
+  {
+    ScopedPhaseTimer phase_timer(&phase_timings, "Build ray scene");
+    ray_scene = sdf::build_ray_scene(build.mesh, progress_callback);
+  }
 
   if (!debug_render_path.empty())
   {
     sdf::Rgb8Image image;
-    if (!sdf::render_debug_image(ray_scene, debug_settings, &image, &error_message, progress_callback))
+    bool render_ok = false;
     {
-      std::cerr << "Debug render failed: " << error_message << '\n';
-      return 1;
+      ScopedPhaseTimer phase_timer(&phase_timings, "Render debug image");
+      render_ok = sdf::render_debug_image(ray_scene, debug_settings, &image, &error_message, progress_callback);
+    }
+    if (!render_ok)
+    {
+      return fail_with_timings("Debug render failed: " + error_message);
     }
 
-    if (!sdf::write_png_rgb8(image, debug_render_path, &error_message))
+    bool debug_write_ok = false;
     {
-      std::cerr << "Debug image write failed: " << error_message << '\n';
-      return 1;
+      ScopedPhaseTimer phase_timer(&phase_timings, "Write debug image");
+      debug_write_ok = sdf::write_png_rgb8(image, debug_render_path, &error_message);
+    }
+    if (!debug_write_ok)
+    {
+      return fail_with_timings("Debug image write failed: " + error_message);
     }
   }
 
@@ -365,30 +564,42 @@ int main(int argc, char **argv)
     bake_settings.height = static_cast<int>(unwrap_result.atlas_height);
 
     sdf::Rgb8Image image;
-    if (!sdf::bake_ambient_occlusion_texture(
-          export_mesh,
-          ray_scene,
-          bake_settings,
-          &image,
-          &bake_result,
-          &error_message,
-          progress_callback))
+    bool bake_ok = false;
     {
-      std::cerr << "AO bake failed: " << error_message << '\n';
-      return 1;
+      ScopedPhaseTimer phase_timer(&phase_timings, "Bake ambient occlusion");
+      bake_ok = sdf::bake_ambient_occlusion_texture(
+        export_mesh,
+        ray_scene,
+        bake_settings,
+        &image,
+        &bake_result,
+        &error_message,
+        progress_callback);
+    }
+    if (!bake_ok)
+    {
+      return fail_with_timings("AO bake failed: " + error_message);
     }
 
-    if (!sdf::write_png_rgb8(image, bake_ao_path, &error_message))
+    bool bake_write_ok = false;
     {
-      std::cerr << "AO bake image write failed: " << error_message << '\n';
-      return 1;
+      ScopedPhaseTimer phase_timer(&phase_timings, "Write AO bake image");
+      bake_write_ok = sdf::write_png_rgb8(image, bake_ao_path, &error_message);
+    }
+    if (!bake_write_ok)
+    {
+      return fail_with_timings("AO bake image write failed: " + error_message);
     }
   }
 
-  if (!sdf::write_obj(export_mesh, output_path, obj_write_options, &error_message))
+  bool obj_write_ok = false;
   {
-    std::cerr << "OBJ export failed: " << error_message << '\n';
-    return 1;
+    ScopedPhaseTimer phase_timer(&phase_timings, "Write OBJ");
+    obj_write_ok = sdf::write_obj(export_mesh, output_path, obj_write_options, &error_message);
+  }
+  if (!obj_write_ok)
+  {
+    return fail_with_timings("OBJ export failed: " + error_message);
   }
 
   std::cout << "Scene file: " << scene_path.string() << '\n';
@@ -443,5 +654,6 @@ int main(int argc, char **argv)
     std::cout << "AO dilation passes: " << bake_result.dilation_passes << '\n';
   }
 
+  print_timing_summary();
   return 0;
 }

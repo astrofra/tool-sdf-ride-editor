@@ -1,6 +1,7 @@
 @echo off
 setlocal
 pushd "%~dp0"
+set ERR=0
 
 call "%~dp0build_debug.bat"
 if errorlevel 1 goto :fail
@@ -16,10 +17,12 @@ if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
   --debug-uv-charts "%~dp0artifacts\generated\frame_006_blockout_uv_charts.png"
 if errorlevel 1 goto :fail
 
-popd
-exit /b 0
+goto :done
 
 :fail
 set ERR=%errorlevel%
+
+:done
+pause
 popd
 exit /b %ERR%
