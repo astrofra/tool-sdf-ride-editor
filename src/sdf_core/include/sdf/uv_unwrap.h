@@ -5,6 +5,7 @@
 #include <string>
 
 #include "sdf/mesh.h"
+#include "sdf/progress.h"
 
 namespace sdf
 {
@@ -47,6 +48,7 @@ bool unwrap_mesh_uvs(
   const UvUnwrapSettings &settings,
   Mesh *output_mesh,
   UvUnwrapResult *result = nullptr,
-  std::string *error_message = nullptr);
+  std::string *error_message = nullptr,
+  const ProgressCallback &progress_callback = {});
 
 }  // namespace sdf

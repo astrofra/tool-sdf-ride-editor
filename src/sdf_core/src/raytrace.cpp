@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "progress_utils.h"
+
 namespace sdf
 {
 
@@ -12,6 +14,12 @@ namespace
 constexpr float kHuge = 1.0e30f;
 constexpr float kEpsilon = 1.0e-4f;
 constexpr int kLeafTriangleThreshold = 4;
+
+struct BvhBuildProgress
+{
+  detail::ProgressScope *scope = nullptr;
+  std::uint64_t completed_nodes = 0;
+};
 
 float component_by_axis(const Vec3 &value, int axis)
 {
@@ -48,10 +56,15 @@ int longest_axis(const Aabb &bounds)
   return extent.z > extent.x ? 2 : 0;
 }
 
-int build_bvh_recursive(RayScene *scene, int start, int end)
+int build_bvh_recursive(RayScene *scene, int start, int end, BvhBuildProgress *progress)
 {
   const int node_index = static_cast<int>(scene->bvh_nodes.size());
   scene->bvh_nodes.push_back(RayBvhNode{});
+  if (progress != nullptr && progress->scope != nullptr)
+  {
+    ++progress->completed_nodes;
+    progress->scope->update(progress->completed_nodes);
+  }
 
   RayBvhNode node;
   node.bounds = compute_triangle_range_bounds(scene->triangles, start, end);
@@ -78,8 +91,8 @@ int build_bvh_recursive(RayScene *scene, int start, int end)
       return component_by_axis(lhs.centroid, split_axis) < component_by_axis(rhs.centroid, split_axis);
     });
 
-  node.left = build_bvh_recursive(scene, start, middle);
-  node.right = build_bvh_recursive(scene, middle, end);
+  node.left = build_bvh_recursive(scene, start, middle, progress);
+  node.right = build_bvh_recursive(scene, middle, end, progress);
 
   scene->bvh_nodes[node_index] = node;
   return node_index;
@@ -189,11 +202,15 @@ bool intersect_triangle(const Ray &ray, const RayTriangle &triangle, float max_d
 
 }  // namespace
 
-RayScene build_ray_scene(const Mesh &mesh)
+RayScene build_ray_scene(const Mesh &mesh, const ProgressCallback &progress_callback)
 {
   RayScene scene;
   scene.bounds = make_empty_aabb();
   scene.triangles.reserve(mesh.triangles.size());
+  detail::ProgressScope triangle_progress(
+    progress_callback,
+    "Build ray triangles",
+    static_cast<std::uint64_t>(mesh.triangles.size()));
 
   for (std::size_t triangle_index = 0; triangle_index < mesh.triangles.size(); ++triangle_index)
   {
@@ -243,11 +260,19 @@ RayScene build_ray_scene(const Mesh &mesh)
 
     scene.triangles.push_back(triangle);
     expand_aabb(scene.bounds, triangle.bounds);
+    triangle_progress.update(static_cast<std::uint64_t>(triangle_index + 1));
   }
+
+  triangle_progress.finish();
 
   if (!scene.triangles.empty())
   {
-    build_bvh_recursive(&scene, 0, static_cast<int>(scene.triangles.size()));
+    const std::uint64_t node_budget = std::max<std::uint64_t>(1u, static_cast<std::uint64_t>(scene.triangles.size()) * 2u - 1u);
+    detail::ProgressScope bvh_progress(progress_callback, "Build ray BVH", node_budget);
+    BvhBuildProgress progress_state;
+    progress_state.scope = &bvh_progress;
+    build_bvh_recursive(&scene, 0, static_cast<int>(scene.triangles.size()), &progress_state);
+    bvh_progress.finish();
   }
 
   return scene;
@@ -310,4 +335,3 @@ bool is_occluded(const RayScene &scene, const Ray &ray, float max_distance)
 }
 
 }  // namespace sdf
-

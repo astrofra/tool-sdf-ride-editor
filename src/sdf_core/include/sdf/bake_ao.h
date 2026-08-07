@@ -6,6 +6,7 @@
 
 #include "sdf/image_write.h"
 #include "sdf/mesh.h"
+#include "sdf/progress.h"
 #include "sdf/raytrace.h"
 
 namespace sdf
@@ -40,6 +41,7 @@ bool bake_ambient_occlusion_texture(
   const AoBakeSettings &settings,
   Rgb8Image *image,
   AoBakeResult *result = nullptr,
-  std::string *error_message = nullptr);
+  std::string *error_message = nullptr,
+  const ProgressCallback &progress_callback = {});
 
 }  // namespace sdf

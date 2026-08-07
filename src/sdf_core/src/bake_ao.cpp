@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <vector>
+
+#include "progress_utils.h"
 
 namespace sdf
 {
@@ -199,7 +202,8 @@ bool bake_ambient_occlusion_texture(
   const AoBakeSettings &settings,
   Rgb8Image *image,
   AoBakeResult *result,
-  std::string *error_message)
+  std::string *error_message,
+  const ProgressCallback &progress_callback)
 {
   if (image == nullptr)
   {
@@ -222,7 +226,6 @@ bool bake_ambient_occlusion_texture(
   }
 
   const std::size_t texel_count = static_cast<std::size_t>(settings.width) * static_cast<std::size_t>(settings.height);
-  const int total_texels = settings.width * settings.height;
   std::vector<Vec3> surface_positions(texel_count);
   std::vector<Vec3> surface_normals(texel_count);
   std::vector<float> ao_values(texel_count, 0.0f);
@@ -230,6 +233,11 @@ bool bake_ambient_occlusion_texture(
   std::vector<std::uint8_t> valid(texel_count, 0u);
   std::vector<int> source_texels(texel_count, -1);
   std::size_t ao_ray_count = 0;
+  detail::ProgressScope ao_progress(
+    progress_callback,
+    "Trace AO texels",
+    static_cast<std::uint64_t>(settings.height));
+  std::atomic<int> completed_rows = 0;
 
   for (std::size_t triangle_index = 0; triangle_index < uv_mesh.triangles.size(); ++triangle_index)
   {
@@ -310,34 +318,41 @@ bool bake_ambient_occlusion_texture(
   }
 
 #ifdef _OPENMP
-#pragma omp parallel for schedule(dynamic, 64) reduction(+:ao_ray_count)
+#pragma omp parallel for schedule(dynamic, 8) reduction(+:ao_ray_count)
 #endif
-  for (int texel_index = 0; texel_index < total_texels; ++texel_index)
+  for (int y = 0; y < settings.height; ++y)
   {
-    if (valid[static_cast<std::size_t>(texel_index)] == 0)
+    for (int x = 0; x < settings.width; ++x)
     {
-      continue;
+      const int texel_index = x + y * settings.width;
+      if (valid[static_cast<std::size_t>(texel_index)] == 0)
+      {
+        continue;
+      }
+
+      const std::uint32_t texel_seed = hash_u32(
+        settings.seed ^
+        static_cast<std::uint32_t>(x * 1973) ^
+        static_cast<std::uint32_t>(y * 9277));
+      int used_sample_count = 0;
+      ao_values[static_cast<std::size_t>(texel_index)] = estimate_ambient_occlusion(
+        ray_scene,
+        surface_positions[static_cast<std::size_t>(texel_index)],
+        surface_normals[static_cast<std::size_t>(texel_index)],
+        settings.min_ao_samples,
+        settings.max_ao_samples,
+        settings.ao_error_threshold,
+        settings.ao_max_distance,
+        texel_seed,
+        &used_sample_count);
+      ao_ray_count += static_cast<std::size_t>(std::max(used_sample_count, 0));
     }
 
-    const int x = texel_index % settings.width;
-    const int y = texel_index / settings.width;
-    const std::uint32_t texel_seed = hash_u32(
-      settings.seed ^
-      static_cast<std::uint32_t>(x * 1973) ^
-      static_cast<std::uint32_t>(y * 9277));
-    int used_sample_count = 0;
-    ao_values[static_cast<std::size_t>(texel_index)] = estimate_ambient_occlusion(
-      ray_scene,
-      surface_positions[static_cast<std::size_t>(texel_index)],
-      surface_normals[static_cast<std::size_t>(texel_index)],
-      settings.min_ao_samples,
-      settings.max_ao_samples,
-      settings.ao_error_threshold,
-      settings.ao_max_distance,
-      texel_seed,
-      &used_sample_count);
-    ao_ray_count += static_cast<std::size_t>(std::max(used_sample_count, 0));
+    const int done = completed_rows.fetch_add(1) + 1;
+    ao_progress.update(static_cast<std::uint64_t>(done));
   }
+
+  ao_progress.finish();
 
   const int dilation_pass_count =
     settings.dilation_passes >= 0

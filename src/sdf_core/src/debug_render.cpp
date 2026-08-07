@@ -1,7 +1,10 @@
 #include "sdf/debug_render.h"
 
 #include <array>
+#include <atomic>
 #include <cmath>
+
+#include "progress_utils.h"
 
 namespace sdf
 {
@@ -167,7 +170,8 @@ bool render_debug_image(
   const RayScene &scene,
   const DebugRenderSettings &settings,
   Rgb8Image *image,
-  std::string *error_message)
+  std::string *error_message,
+  const ProgressCallback &progress_callback)
 {
   if (image == nullptr)
   {
@@ -251,6 +255,8 @@ bool render_debug_image(
   image->width = settings.width;
   image->height = settings.height;
   image->pixels.assign(static_cast<std::size_t>(settings.width * settings.height * 3), 0u);
+  detail::ProgressScope progress(progress_callback, "Render debug image", static_cast<std::uint64_t>(settings.height));
+  std::atomic<int> completed_rows = 0;
 
 #ifdef _OPENMP
 #pragma omp parallel for schedule(dynamic, 8)
@@ -314,8 +320,12 @@ bool render_debug_image(
       image->pixels[pixel_index + 1] = gray;
       image->pixels[pixel_index + 2] = gray;
     }
+
+    const int done = completed_rows.fetch_add(1) + 1;
+    progress.update(static_cast<std::uint64_t>(done));
   }
 
+  progress.finish();
   return true;
 }
 

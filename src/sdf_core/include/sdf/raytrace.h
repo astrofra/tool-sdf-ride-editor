@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "sdf/mesh.h"
+#include "sdf/progress.h"
 #include "sdf/types.h"
 
 namespace sdf
@@ -63,9 +64,8 @@ struct RayScene
   Aabb bounds = make_empty_aabb();
 };
 
-RayScene build_ray_scene(const Mesh &mesh);
+RayScene build_ray_scene(const Mesh &mesh, const ProgressCallback &progress_callback = {});
 bool intersect_ray(const RayScene &scene, const Ray &ray, float max_distance, RayHit *hit);
 bool is_occluded(const RayScene &scene, const Ray &ray, float max_distance);
 
 }  // namespace sdf
-

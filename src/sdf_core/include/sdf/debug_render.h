@@ -4,6 +4,7 @@
 #include <string>
 
 #include "sdf/image_write.h"
+#include "sdf/progress.h"
 #include "sdf/raytrace.h"
 
 namespace sdf
@@ -39,7 +40,7 @@ bool render_debug_image(
   const RayScene &scene,
   const DebugRenderSettings &settings,
   Rgb8Image *image,
-  std::string *error_message = nullptr);
+  std::string *error_message = nullptr,
+  const ProgressCallback &progress_callback = {});
 
 }  // namespace sdf
-

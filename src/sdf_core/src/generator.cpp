@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <vector>
 
+#include "progress_utils.h"
+
 namespace sdf
 {
 
@@ -413,7 +415,10 @@ float evaluate_scene_sdf(const SceneDocument &scene, const Vec3 &point)
   return distance;
 }
 
-SceneBuildResult build_scene_mesh(const SceneDocument &scene, const BuildSettings &settings)
+SceneBuildResult build_scene_mesh(
+  const SceneDocument &scene,
+  const BuildSettings &settings,
+  const ProgressCallback &progress_callback)
 {
   if (settings.cell_size <= 0.0f)
   {
@@ -438,6 +443,11 @@ SceneBuildResult build_scene_mesh(const SceneDocument &scene, const BuildSetting
   };
 
   std::vector<float> sdf_samples(static_cast<std::size_t>(point_dims.nx) * point_dims.ny * point_dims.nz, 0.0f);
+  detail::ProgressScope sample_progress(
+    progress_callback,
+    "Sample SDF field",
+    static_cast<std::uint64_t>(point_dims.nz) * static_cast<std::uint64_t>(point_dims.ny));
+  std::uint64_t sampled_rows = 0;
 
   for (int z = 0; z < point_dims.nz; ++z)
   {
@@ -447,8 +457,13 @@ SceneBuildResult build_scene_mesh(const SceneDocument &scene, const BuildSetting
       {
         sdf_samples[grid_index(point_dims, x, y, z)] = evaluate_scene_sdf(scene, grid_point_position(x, y, z));
       }
+
+      ++sampled_rows;
+      sample_progress.update(sampled_rows);
     }
   }
+
+  sample_progress.finish();
 
   auto sample_value = [&](int x, int y, int z) -> float
   {
@@ -460,6 +475,11 @@ SceneBuildResult build_scene_mesh(const SceneDocument &scene, const BuildSetting
 
   const float half_cell = settings.cell_size * 0.5f;
   const float gradient_epsilon = std::max(settings.cell_size * 0.25f, 1.0e-3f);
+  detail::ProgressScope polygonize_progress(
+    progress_callback,
+    "Polygonize cells",
+    static_cast<std::uint64_t>(cell_dims.nz) * static_cast<std::uint64_t>(cell_dims.ny));
+  std::uint64_t polygonized_rows = 0;
 
   for (int z = 0; z < cell_dims.nz; ++z)
   {
@@ -530,8 +550,13 @@ SceneBuildResult build_scene_mesh(const SceneDocument &scene, const BuildSetting
             result.mesh);
         }
       }
+
+      ++polygonized_rows;
+      polygonize_progress.update(polygonized_rows);
     }
   }
+
+  polygonize_progress.finish();
 
   return result;
 }

@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <string>
 
 #include "sdf/bake_ao.h"
@@ -44,6 +45,41 @@ bool parse_debug_mode(const std::string &text, sdf::DebugRenderMode *mode)
   }
   return false;
 }
+
+class ConsoleProgressPrinter
+{
+public:
+  void print(const sdf::ProgressUpdate &update)
+  {
+    std::scoped_lock lock(mutex_);
+
+    const bool stage_changed = current_stage_ != update.stage;
+    if (stage_changed && line_open_)
+    {
+      std::cout << '\n';
+      line_open_ = false;
+    }
+
+    current_stage_ = std::string(update.stage);
+    std::cout << '\r' << "[progress] " << current_stage_ << ": " << update.percent << '%';
+    std::cout.flush();
+
+    if (update.completed >= update.total)
+    {
+      std::cout << '\n';
+      current_stage_.clear();
+      line_open_ = false;
+      return;
+    }
+
+    line_open_ = true;
+  }
+
+private:
+  std::mutex mutex_;
+  std::string current_stage_;
+  bool line_open_ = false;
+};
 
 void print_usage()
 {
@@ -234,7 +270,15 @@ int main(int argc, char **argv)
     scene_file.build_settings.cell_size = cell_size_override;
   }
 
-  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+  ConsoleProgressPrinter progress_printer;
+  const sdf::ProgressCallback progress_callback =
+    [&](const sdf::ProgressUpdate &update)
+    {
+      progress_printer.print(update);
+    };
+
+  const sdf::SceneBuildResult build =
+    sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings, progress_callback);
   sdf::Mesh export_mesh = build.mesh;
   sdf::UvUnwrapResult unwrap_result;
   const bool needs_uv_unwrap = unwrap_uvs || !bake_ao_path.empty();
@@ -249,19 +293,25 @@ int main(int argc, char **argv)
   sdf::AoBakeResult bake_result;
   if (needs_uv_unwrap)
   {
-    if (!sdf::unwrap_mesh_uvs(build.mesh, unwrap_settings, &export_mesh, &unwrap_result, &error_message))
+    if (!sdf::unwrap_mesh_uvs(
+          build.mesh,
+          unwrap_settings,
+          &export_mesh,
+          &unwrap_result,
+          &error_message,
+          progress_callback))
     {
       std::cerr << "UV unwrap failed: " << error_message << '\n';
       return 1;
     }
   }
 
-  const sdf::RayScene ray_scene = sdf::build_ray_scene(build.mesh);
+  const sdf::RayScene ray_scene = sdf::build_ray_scene(build.mesh, progress_callback);
 
   if (!debug_render_path.empty())
   {
     sdf::Rgb8Image image;
-    if (!sdf::render_debug_image(ray_scene, debug_settings, &image, &error_message))
+    if (!sdf::render_debug_image(ray_scene, debug_settings, &image, &error_message, progress_callback))
     {
       std::cerr << "Debug render failed: " << error_message << '\n';
       return 1;
@@ -280,7 +330,14 @@ int main(int argc, char **argv)
     bake_settings.height = static_cast<int>(unwrap_result.atlas_height);
 
     sdf::Rgb8Image image;
-    if (!sdf::bake_ambient_occlusion_texture(export_mesh, ray_scene, bake_settings, &image, &bake_result, &error_message))
+    if (!sdf::bake_ambient_occlusion_texture(
+          export_mesh,
+          ray_scene,
+          bake_settings,
+          &image,
+          &bake_result,
+          &error_message,
+          progress_callback))
     {
       std::cerr << "AO bake failed: " << error_message << '\n';
       return 1;

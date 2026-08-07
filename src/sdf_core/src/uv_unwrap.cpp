@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "progress_utils.h"
 #include "xatlas.h"
 
 namespace sdf
@@ -32,6 +33,51 @@ bool fail(std::string *error_message, const std::string &message)
     *error_message = message;
   }
   return false;
+}
+
+const char *progress_stage_name(xatlas::ProgressCategory category)
+{
+  switch (category)
+  {
+  case xatlas::ProgressCategory::AddMesh:
+    return "xatlas AddMesh";
+  case xatlas::ProgressCategory::ComputeCharts:
+    return "xatlas ComputeCharts";
+  case xatlas::ProgressCategory::PackCharts:
+    return "xatlas PackCharts";
+  case xatlas::ProgressCategory::BuildOutputMeshes:
+    return "xatlas BuildOutputMeshes";
+  default:
+    return "xatlas";
+  }
+}
+
+struct XatlasProgressBridge
+{
+  const ProgressCallback *callback = nullptr;
+};
+
+bool forward_xatlas_progress(xatlas::ProgressCategory category, int progress, void *user_data)
+{
+  if (user_data == nullptr)
+  {
+    return true;
+  }
+
+  const XatlasProgressBridge *bridge = static_cast<const XatlasProgressBridge *>(user_data);
+  if (bridge->callback == nullptr || !(*bridge->callback))
+  {
+    return true;
+  }
+
+  const int clamped_progress = std::clamp(progress, 0, 100);
+  (*bridge->callback)(ProgressUpdate{
+    progress_stage_name(category),
+    static_cast<std::uint64_t>(clamped_progress),
+    100u,
+    clamped_progress
+  });
+  return true;
 }
 
 struct QuantizedPositionKey
@@ -82,7 +128,11 @@ QuantizedPositionKey quantize_position(const Vec3 &position, float epsilon)
   };
 }
 
-bool build_unwrap_input_mesh(const Mesh &input_mesh, float epsilon, UnwrapInputMesh *unwrap_mesh)
+bool build_unwrap_input_mesh(
+  const Mesh &input_mesh,
+  float epsilon,
+  UnwrapInputMesh *unwrap_mesh,
+  const ProgressCallback &progress_callback)
 {
   if (unwrap_mesh == nullptr)
   {
@@ -100,6 +150,10 @@ bool build_unwrap_input_mesh(const Mesh &input_mesh, float epsilon, UnwrapInputM
   unwrap_mesh->vertices.clear();
   unwrap_mesh->indices.clear();
   unwrap_mesh->face_materials.clear();
+  detail::ProgressScope weld_progress(
+    progress_callback,
+    "Weld unwrap input",
+    static_cast<std::uint64_t>(input_mesh.vertices.size()));
 
   for (std::size_t original_index = 0; original_index < input_mesh.vertices.size(); ++original_index)
   {
@@ -152,7 +206,10 @@ bool build_unwrap_input_mesh(const Mesh &input_mesh, float epsilon, UnwrapInputM
     accum.uv_sum.y += vertex.uv0.y;
     accum.count += 1u;
     original_to_welded[original_index] = welded_index;
+    weld_progress.update(static_cast<std::uint64_t>(original_index + 1));
   }
+
+  weld_progress.finish();
 
   for (std::size_t welded_index = 0; welded_index < unwrap_mesh->vertices.size(); ++welded_index)
   {
@@ -200,7 +257,8 @@ bool unwrap_mesh_uvs(
   const UvUnwrapSettings &settings,
   Mesh *output_mesh,
   UvUnwrapResult *result,
-  std::string *error_message)
+  std::string *error_message,
+  const ProgressCallback &progress_callback)
 {
   if (output_mesh == nullptr)
   {
@@ -213,7 +271,7 @@ bool unwrap_mesh_uvs(
   }
 
   UnwrapInputMesh unwrap_input_mesh;
-  if (!build_unwrap_input_mesh(input_mesh, settings.epsilon, &unwrap_input_mesh))
+  if (!build_unwrap_input_mesh(input_mesh, settings.epsilon, &unwrap_input_mesh, progress_callback))
   {
     return fail(error_message, "uv unwrap failed while welding the input mesh");
   }
@@ -223,6 +281,10 @@ bool unwrap_mesh_uvs(
   {
     return fail(error_message, "xatlas failed to allocate an atlas");
   }
+
+  XatlasProgressBridge progress_bridge;
+  progress_bridge.callback = &progress_callback;
+  xatlas::SetProgressCallback(atlas.get(), forward_xatlas_progress, &progress_bridge);
 
   xatlas::MeshDecl mesh_decl;
   mesh_decl.vertexCount = static_cast<std::uint32_t>(unwrap_input_mesh.vertices.size());
