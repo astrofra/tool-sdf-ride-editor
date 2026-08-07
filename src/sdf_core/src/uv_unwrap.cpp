@@ -118,6 +118,39 @@ struct UnwrapInputMesh
   std::vector<std::uint32_t> face_materials;
 };
 
+bool resolve_triangle_chart_id(
+  const xatlas::Mesh &atlas_mesh,
+  std::uint32_t i0,
+  std::uint32_t i1,
+  std::uint32_t i2,
+  std::int32_t *chart_id)
+{
+  if (chart_id == nullptr)
+  {
+    return false;
+  }
+
+  const std::int32_t c0 = atlas_mesh.vertexArray[i0].chartIndex;
+  const std::int32_t c1 = atlas_mesh.vertexArray[i1].chartIndex;
+  const std::int32_t c2 = atlas_mesh.vertexArray[i2].chartIndex;
+
+  std::int32_t resolved = -1;
+  for (std::int32_t candidate : {c0, c1, c2})
+  {
+    if (candidate >= 0)
+    {
+      if (resolved >= 0 && candidate != resolved)
+      {
+        return false;
+      }
+      resolved = candidate;
+    }
+  }
+
+  *chart_id = resolved;
+  return true;
+}
+
 QuantizedPositionKey quantize_position(const Vec3 &position, float epsilon)
 {
   const float safe_epsilon = std::max(epsilon, 1.0e-7f);
@@ -398,6 +431,10 @@ bool unwrap_mesh_uvs(
     triangle.material_id = triangle_index < unwrap_input_mesh.face_materials.size()
       ? unwrap_input_mesh.face_materials[triangle_index]
       : 0;
+    if (!resolve_triangle_chart_id(atlas_mesh, i0, i1, i2, &triangle.uv_chart_id))
+    {
+      return fail(error_message, "xatlas returned a triangle spanning multiple chart indices");
+    }
     unwrapped_mesh.triangles.push_back(triangle);
   }
 

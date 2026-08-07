@@ -21,6 +21,7 @@ struct MeshTriangle
   std::uint32_t i1 = 0;
   std::uint32_t i2 = 0;
   std::uint32_t material_id = 0;
+  std::int32_t uv_chart_id = -1;
 };
 
 struct Mesh
@@ -30,4 +31,3 @@ struct Mesh
 };
 
 }  // namespace sdf
-

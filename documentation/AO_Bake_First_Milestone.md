@@ -111,6 +111,26 @@ The default bake profile is:
 - maximum samples: `256`
 - error threshold: `0.03`
 
+### Current Denoise Stage
+
+As of **August 7, 2026**, the baker also has a first optional denoise stage.
+
+The current implementation is intentionally narrow:
+
+- it runs after AO evaluation and before dilation;
+- it only filters texels that were actually rasterized from UV charts;
+- it only accumulates neighbors from the same UV chart;
+- it uses surface-normal similarity as an extra edge-aware weight.
+
+This is a first chart-aware cross-bilateral pass, not a final denoise architecture.
+
+The current CLI controls are:
+
+- `--bake-ao-denoise-passes N`
+- `--bake-ao-denoise-radius N`
+
+The denoiser remains optional so bake behavior stays explicit while the defaults are still being tuned.
+
 ---
 
 ## Padding Decision
@@ -219,7 +239,6 @@ The following remain intentionally deferred:
 - AO supersampling;
 - chart debug images;
 - seam-aware blur or resolve;
-- island-aware denoise based on chart identity;
 - tile-, bucket-, or chart-based parallel UV rasterization;
 - source-aware nearest-fill heuristics beyond simple neighborhood propagation;
 - packed bake outputs;

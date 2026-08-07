@@ -3,8 +3,16 @@
 ## Status
 
 Recorded on **August 7, 2026** as a deferred improvement.
+First implementation milestone applied on **August 7, 2026**.
 
-This note describes a future post-process denoiser for baked ambient occlusion that respects UV island boundaries instead of filtering across unrelated parts of the mesh.
+This note now describes the remaining follow-up work around the first chart-aware AO denoiser implemented in this repository.
+
+The current implementation already does the following:
+
+- preserves `chart_id` on unwrapped triangles from `xatlas`;
+- rasterizes a `chart_id` per baked texel;
+- runs an optional chart-aware AO denoise pass before dilation;
+- uses surface-normal similarity as an extra cross-bilateral weight.
 
 ---
 
@@ -43,13 +51,11 @@ The current baker already has:
 - reconstructed shading normals per texel during sampling;
 - UV packing produced by `xatlas`.
 
-What it does **not** currently preserve is the chart identity of each texel.
-
-The future denoiser therefore needs at least:
+The first implementation already preserves the minimum required data:
 
 1. a `chart_id` per unwrapped triangle;
 2. a rasterized `chart_id` per baked texel;
-3. optionally a texel normal buffer for edge-aware weights.
+3. a texel normal buffer for edge-aware weights.
 
 ---
 
@@ -57,32 +63,27 @@ The future denoiser therefore needs at least:
 
 `xatlas` exposes chart membership in its output mesh.
 
-The unwrap stage should later preserve that information explicitly in local data.
+The current implementation preserves that information directly on local output triangles through a UV chart identifier.
 
-There are two practical ways to do that:
-
-1. extend local mesh triangle metadata with a UV chart identifier;
-2. keep a sidecar unwrap result structure that stores chart id per output triangle.
-
-Either is acceptable, but the second option is less invasive if the base mesh format should remain generic.
+That choice is now the active local baseline.
 
 ---
 
 ## Required Bake Outputs
 
-The AO bake raster stage should later produce additional buffers:
+The AO bake raster stage now produces the additional in-memory buffers the denoiser needs:
 
 - `valid_mask`
 - `chart_id_map`
-- optionally `normal_map`
+- `normal_map`
 
-These do not need to be written to disk by default, but they should exist in memory so the denoiser can operate on them.
+These still do not need to be written to disk by default.
 
 ---
 
 ## Recommended First Filter
 
-The first denoiser should be a **chart-aware grayscale filter**.
+The first denoiser is now a **chart-aware grayscale filter**.
 
 Recommended constraints:
 
@@ -96,13 +97,13 @@ This can start as a small-radius iterative filter such as:
 - cross-bilateral;
 - edge-aware box or Gaussian.
 
-The recommended first version is a **cross-bilateral** filter because it is simple enough to implement locally and respects both island identity and local surface orientation.
+The implemented first version is a small-radius **cross-bilateral** filter because it is simple enough to implement locally and respects both island identity and local surface orientation.
 
 ---
 
 ## Filtering Rules
 
-The future first-pass rules should be:
+The current first-pass rules are:
 
 1. reject neighbors outside the atlas image;
 2. reject neighbors whose texels are invalid;
@@ -111,7 +112,7 @@ The future first-pass rules should be:
 5. optionally compute a normal-consistency weight;
 6. normalize and write the filtered grayscale AO.
 
-This avoids the main failure mode of naive atlas-space blurs.
+This already avoids the main failure mode of naive atlas-space blurs.
 
 ---
 
@@ -138,9 +139,9 @@ The recent OpenMP-friendly split of the AO baker into:
 - AO evaluation per valid texel;
 - post-process padding;
 
-is also the right foundation for a later denoiser stage.
+is what made the first denoiser stage easy to insert cleanly.
 
-A future denoise pass can be inserted cleanly after AO evaluation and before final image write.
+The denoise pass now sits cleanly after AO evaluation and before padding / final image write.
 
 This is a useful architectural side effect:
 
@@ -150,23 +151,22 @@ This is a useful architectural side effect:
 
 ---
 
-## Deferred Implementation Steps
+## Remaining Implementation Steps
 
-The future implementation order should be:
+The next implementation order should be:
 
-1. preserve chart id information from `xatlas` output;
-2. rasterize a `chart_id_map` during AO bake;
-3. add a chart-aware denoise pass on the AO buffer;
-4. make the denoiser optional from the CLI;
-5. expose radius and strength only after the first working version exists.
+1. tune the default filter strength on larger production bakes;
+2. expose more edge-aware controls only if practical iteration actually needs them;
+3. evaluate per-chart or per-island denoise scheduling if CPU time becomes noticeable;
+4. add chart debug outputs if denoise behavior becomes harder to reason about.
 
-This keeps the work incremental and testable.
+This keeps the next work incremental and testable.
 
 ---
 
 ## Non-Goals For First Version
 
-The first island-aware denoiser should **not** attempt:
+The current first island-aware denoiser still does **not** attempt:
 
 - texture synthesis;
 - hole filling for invalid texels;

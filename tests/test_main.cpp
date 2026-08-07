@@ -363,6 +363,7 @@ void test_uv_unwrap_generates_normalized_uvs()
     expect_true(triangle.i0 < unwrapped_mesh.vertices.size(), "unwrapped triangle i0 should stay within the vertex buffer");
     expect_true(triangle.i1 < unwrapped_mesh.vertices.size(), "unwrapped triangle i1 should stay within the vertex buffer");
     expect_true(triangle.i2 < unwrapped_mesh.vertices.size(), "unwrapped triangle i2 should stay within the vertex buffer");
+    expect_true(triangle.uv_chart_id >= 0, "unwrapped triangles should preserve a valid chart id");
   }
 
   for (const sdf::MeshVertex &vertex : unwrapped_mesh.vertices)
@@ -431,6 +432,8 @@ void test_ao_bake_writes_png()
   bake_settings.height = static_cast<int>(unwrap_result.atlas_height);
   bake_settings.min_ao_samples = 4;
   bake_settings.max_ao_samples = 8;
+  bake_settings.denoise_passes = 1;
+  bake_settings.denoise_radius = 1;
   bake_settings.ao_error_threshold = 1.0f;
   bake_settings.ao_max_distance = 8.0f;
   bake_settings.seed = 123;
@@ -458,6 +461,8 @@ void test_ao_bake_writes_png()
   expect_true(
     std::fabs(bake_result.average_ao_samples_per_baked_texel - 4.0f) < 0.01f,
     "very loose adaptive error threshold should stop at the minimum sample count");
+  expect_true(bake_result.denoise_passes == 1, "ao bake should report the configured denoise pass count");
+  expect_true(bake_result.denoise_radius == 1, "ao bake should report the configured denoise radius");
   expect_true(bake_result.dilation_passes >= 16, "ao bake auto dilation should use a non-trivial pass count");
 
   std::size_t non_black_pixels = 0;

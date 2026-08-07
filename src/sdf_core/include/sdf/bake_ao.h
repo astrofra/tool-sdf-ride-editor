@@ -18,6 +18,8 @@ struct AoBakeSettings
   int height = 0;
   int min_ao_samples = 4;
   int max_ao_samples = 16;
+  int denoise_passes = 0;
+  int denoise_radius = 1;
   int dilation_passes = -1;
   float ao_error_threshold = 0.03f;
   float ao_max_distance = 12.0f;
@@ -32,6 +34,8 @@ struct AoBakeResult
   std::size_t covered_texels = 0;
   std::size_t ao_ray_count = 0;
   float average_ao_samples_per_baked_texel = 0.0f;
+  int denoise_passes = 0;
+  int denoise_radius = 0;
   int dilation_passes = 0;
 };
 

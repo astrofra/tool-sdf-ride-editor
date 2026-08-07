@@ -53,6 +53,21 @@ float minimum3(float a, float b, float c)
   return std::min(a, std::min(b, c));
 }
 
+float compute_spatial_weight(int dx, int dy, int radius)
+{
+  const float sigma = std::max(0.75f, static_cast<float>(radius) * 0.75f);
+  const float distance_squared = static_cast<float>(dx * dx + dy * dy);
+  const float sigma_squared = sigma * sigma;
+  return std::exp(-distance_squared / (2.0f * sigma_squared));
+}
+
+float compute_normal_weight(const Vec3 &lhs, const Vec3 &rhs)
+{
+  constexpr float kNormalSigma = 0.15f;
+  const float alignment = clampf(dot(lhs, rhs), 0.0f, 1.0f);
+  return std::exp(-(1.0f - alignment) / kNormalSigma);
+}
+
 std::uint32_t hash_u32(std::uint32_t value)
 {
   value ^= value >> 16;
@@ -231,6 +246,7 @@ bool bake_ambient_occlusion_texture(
   std::vector<float> ao_values(texel_count, 0.0f);
   std::vector<float> coverage_scores(texel_count, -1.0e30f);
   std::vector<std::uint8_t> valid(texel_count, 0u);
+  std::vector<int> chart_ids(texel_count, -1);
   std::vector<int> source_texels(texel_count, -1);
   std::size_t ao_ray_count = 0;
   detail::ProgressScope ao_progress(
@@ -306,6 +322,7 @@ bool bake_ambient_occlusion_texture(
         surface_normals[texel_index] = shading_normal;
         coverage_scores[texel_index] = coverage_score;
         valid[texel_index] = 1u;
+        chart_ids[texel_index] = triangle.uv_chart_id;
         source_texels[texel_index] = static_cast<int>(texel_index);
       }
     }
@@ -353,6 +370,79 @@ bool bake_ambient_occlusion_texture(
   }
 
   ao_progress.finish();
+
+  const int denoise_pass_count = std::max(settings.denoise_passes, 0);
+  const int denoise_radius = std::max(settings.denoise_radius, 0);
+  if (denoise_pass_count > 0 && denoise_radius > 0)
+  {
+    detail::ProgressScope denoise_progress(
+      progress_callback,
+      "Denoise AO",
+      static_cast<std::uint64_t>(denoise_pass_count) * static_cast<std::uint64_t>(settings.height));
+
+    for (int pass = 0; pass < denoise_pass_count; ++pass)
+    {
+      std::vector<float> next_ao = ao_values;
+      std::atomic<int> denoise_rows_completed = 0;
+      const std::uint64_t pass_base = static_cast<std::uint64_t>(pass) * static_cast<std::uint64_t>(settings.height);
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+      for (int y = 0; y < settings.height; ++y)
+      {
+        for (int x = 0; x < settings.width; ++x)
+        {
+          const std::size_t texel_index = static_cast<std::size_t>(x + y * settings.width);
+          if (valid[texel_index] == 0)
+          {
+            continue;
+          }
+
+          const int center_chart_id = chart_ids[texel_index];
+          const Vec3 &center_normal = surface_normals[texel_index];
+          float weighted_sum = 0.0f;
+          float weight_sum = 0.0f;
+
+          const int min_y = std::max(0, y - denoise_radius);
+          const int max_y = std::min(settings.height - 1, y + denoise_radius);
+          const int min_x = std::max(0, x - denoise_radius);
+          const int max_x = std::min(settings.width - 1, x + denoise_radius);
+          for (int sample_y = min_y; sample_y <= max_y; ++sample_y)
+          {
+            for (int sample_x = min_x; sample_x <= max_x; ++sample_x)
+            {
+              const std::size_t sample_index = static_cast<std::size_t>(sample_x + sample_y * settings.width);
+              if (valid[sample_index] == 0 || chart_ids[sample_index] != center_chart_id)
+              {
+                continue;
+              }
+
+              const int dx = sample_x - x;
+              const int dy = sample_y - y;
+              const float spatial_weight = compute_spatial_weight(dx, dy, denoise_radius);
+              const float normal_weight = compute_normal_weight(center_normal, surface_normals[sample_index]);
+              const float weight = spatial_weight * normal_weight;
+              weighted_sum += ao_values[sample_index] * weight;
+              weight_sum += weight;
+            }
+          }
+
+          if (weight_sum > 1.0e-6f)
+          {
+            next_ao[texel_index] = weighted_sum / weight_sum;
+          }
+        }
+
+        const int done = denoise_rows_completed.fetch_add(1) + 1;
+        denoise_progress.update(pass_base + static_cast<std::uint64_t>(done));
+      }
+
+      ao_values.swap(next_ao);
+    }
+
+    denoise_progress.finish();
+  }
 
   const int dilation_pass_count =
     settings.dilation_passes >= 0
@@ -450,6 +540,8 @@ bool bake_ambient_occlusion_texture(
     result->ao_ray_count = ao_ray_count;
     result->average_ao_samples_per_baked_texel =
       baked_texels > 0 ? static_cast<float>(ao_ray_count) / static_cast<float>(baked_texels) : 0.0f;
+    result->denoise_passes = denoise_pass_count;
+    result->denoise_radius = denoise_pass_count > 0 ? denoise_radius : 0;
     result->dilation_passes = dilation_pass_count;
   }
 

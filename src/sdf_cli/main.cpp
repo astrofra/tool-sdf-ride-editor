@@ -88,6 +88,7 @@ void print_usage()
     << "               [--unwrap-uvs] [--uv-resolution N] [--uv-padding N]\n"
     << "               [--bake-ao PATH] [--bake-ao-samples N] [--bake-ao-min-samples N]\n"
     << "               [--bake-ao-error-threshold F] [--bake-ao-max-distance F]\n"
+    << "               [--bake-ao-denoise-passes N] [--bake-ao-denoise-radius N]\n"
     << "               [--bake-ao-dilation N]\n"
     << "               [--debug-render PATH] [--debug-mode depth|normal|ao]\n"
     << "               [--render-width N] [--render-height N]\n"
@@ -201,6 +202,18 @@ int main(int argc, char **argv)
     if (argument == "--bake-ao-max-distance" && index + 1 < argc)
     {
       bake_settings.ao_max_distance = std::stof(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--bake-ao-denoise-passes" && index + 1 < argc)
+    {
+      bake_settings.denoise_passes = std::stoi(argv[++index]);
+      continue;
+    }
+
+    if (argument == "--bake-ao-denoise-radius" && index + 1 < argc)
+    {
+      bake_settings.denoise_radius = std::stoi(argv[++index]);
       continue;
     }
 
@@ -388,6 +401,8 @@ int main(int argc, char **argv)
     std::cout << "AO covered texels: " << bake_result.covered_texels << '\n';
     std::cout << "AO ray count: " << bake_result.ao_ray_count << '\n';
     std::cout << "AO average samples: " << bake_result.average_ao_samples_per_baked_texel << '\n';
+    std::cout << "AO denoise passes: " << bake_result.denoise_passes << '\n';
+    std::cout << "AO denoise radius: " << bake_result.denoise_radius << '\n';
     std::cout << "AO dilation passes: " << bake_result.dilation_passes << '\n';
   }
 
