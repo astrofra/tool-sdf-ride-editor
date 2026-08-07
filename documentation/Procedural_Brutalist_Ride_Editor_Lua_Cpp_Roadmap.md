@@ -339,6 +339,21 @@ No shader graphs, no renderer state, no engine material objects.
 
 Normals and UVs should be stored explicitly in the working mesh once generated.
 
+### 6.6 Meshing Evolution Note
+
+As of **August 7, 2026**, the implemented baseline extractor is a uniform-grid marching-tetrahedra style polygonizer.
+
+This is acceptable as a first functional mesher, but it is not assumed to be the long-term final answer.
+
+The next meshing evaluation target is dual contouring, for two main reasons:
+
+- better fit for large architectural SDF forms with sharper structural cues;
+- likely reduction of downstream UV unwrap cost, which is now dominated by `xatlas ComputeCharts` on production-like scenes.
+
+The detailed rationale and milestone shape are recorded in:
+
+- `documentation/Dual_Contouring_Evaluation_Plan.md`
+
 Recommended rule:
 
 - positions, normals, and UVs should already be split as needed for seams and hard edges before export.
@@ -686,6 +701,11 @@ Deliver:
 - triangle mesh generation;
 - normal generation;
 - OBJ writer.
+
+Current implementation note:
+
+- the first working mesher is marching tetrahedra on a regular grid;
+- dual contouring is the next planned meshing evaluation milestone, not a prerequisite for the initial native-core delivery.
 
 Exit criterion:
 
