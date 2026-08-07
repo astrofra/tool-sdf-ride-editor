@@ -414,6 +414,24 @@ bool load_scene_file(
       continue;
     }
 
+    if (tokens[0] == "meshing_mode")
+    {
+      if (tokens.size() != 2)
+      {
+        return fail_with_message(error_message, input_path, line_number, "meshing_mode expects one symbolic value");
+      }
+
+      if (!parse_meshing_mode_name(tokens[1], &parsed_file.build_settings.meshing_mode))
+      {
+        return fail_with_message(
+          error_message,
+          input_path,
+          line_number,
+          "meshing_mode must be 'marching_tetrahedra' or 'dual_contouring'");
+      }
+      continue;
+    }
+
     if (tokens[0] == "box")
     {
       if (!parse_box_line(tokens, input_path, line_number, &parsed_file.scene, error_message))

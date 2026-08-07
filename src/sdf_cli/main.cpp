@@ -229,7 +229,7 @@ private:
 void print_usage()
 {
   std::cout
-    << "Usage: sdf_cli [--scene PATH] [--out PATH] [--cell-size VALUE]\n"
+    << "Usage: sdf_cli [--scene PATH] [--out PATH] [--cell-size VALUE] [--meshing-mode MODE]\n"
     << "               [--unwrap-uvs] [--uv-resolution N] [--uv-padding N]\n"
     << "               [--debug-uv-charts PATH]\n"
     << "               [--bake-ao PATH] [--bake-ao-samples N] [--bake-ao-min-samples N]\n"
@@ -242,6 +242,7 @@ void print_usage()
     << "               [--ao-samples N] [--ao-max-distance F]\n"
     << "\n"
     << "Notes:\n"
+    << "  --meshing-mode accepts 'marching_tetrahedra' or 'dual_contouring'.\n"
     << "  --uv-resolution must be a power of two and is treated as an exact atlas size.\n";
 }
 
@@ -257,6 +258,8 @@ int main(int argc, char **argv)
   std::filesystem::path bake_ao_path;
   bool has_cell_size_override = false;
   float cell_size_override = 0.0f;
+  bool has_meshing_mode_override = false;
+  sdf::MeshingMode meshing_mode_override = sdf::MeshingMode::MarchingTetrahedra;
   bool unwrap_uvs = false;
   sdf::DebugRenderSettings debug_settings;
   sdf::UvUnwrapSettings unwrap_settings;
@@ -325,6 +328,18 @@ int main(int argc, char **argv)
     {
       cell_size_override = std::stof(argv[++index]);
       has_cell_size_override = true;
+      continue;
+    }
+
+    if (argument == "--meshing-mode" && index + 1 < argc)
+    {
+      if (!sdf::parse_meshing_mode_name(argv[++index], &meshing_mode_override))
+      {
+        std::cerr << "Unknown meshing mode.\n";
+        print_usage();
+        return 1;
+      }
+      has_meshing_mode_override = true;
       continue;
     }
 
@@ -469,6 +484,10 @@ int main(int argc, char **argv)
   {
     scene_file.build_settings.cell_size = cell_size_override;
   }
+  if (has_meshing_mode_override)
+  {
+    scene_file.build_settings.meshing_mode = meshing_mode_override;
+  }
 
   const sdf::ProgressCallback progress_callback =
     [&](const sdf::ProgressUpdate &update)
@@ -605,6 +624,7 @@ int main(int argc, char **argv)
   std::cout << "Scene file: " << scene_path.string() << '\n';
   std::cout << "Scene: " << scene_file.scene.name << '\n';
   std::cout << "Boxes: " << scene_file.scene.boxes.size() << '\n';
+  std::cout << "Meshing mode: " << sdf::meshing_mode_name(scene_file.build_settings.meshing_mode) << '\n';
   std::cout << "Cell size: " << scene_file.build_settings.cell_size << '\n';
   std::cout << "Sampled cells: " << build.sampled_cells << '\n';
   std::cout << "Occupied cells: " << build.occupied_cells << '\n';

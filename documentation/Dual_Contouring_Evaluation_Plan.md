@@ -3,6 +3,7 @@
 ## Status
 
 Planned on **August 7, 2026**.
+First uniform-grid milestone implemented on **August 7, 2026**.
 
 This note records the current design and technical decision to evaluate dual contouring as the next meshing evolution milestone.
 
@@ -46,6 +47,21 @@ The next meshing R&D milestone should evaluate **dual contouring**.
 This is not yet a decision to fully replace the current extractor.
 
 It is a decision to build and benchmark a first dual contouring path against the current polygonizer under the same scene and bake workloads.
+
+### Current Implemented Milestone
+
+The repository now contains a first opt-in dual contouring path.
+
+Current implementation shape:
+
+- the existing marching-tetrahedra extractor remains available;
+- a `MeshingMode` selector now exists in build settings;
+- scene files can now declare `meshing_mode`;
+- the CLI can now override meshing mode explicitly;
+- the new dual contouring path runs on the same uniform sampling grid as the old extractor;
+- downstream OBJ export, unwrap, ray build, and AO bake remain unchanged.
+
+This milestone should be treated as a practical evaluation baseline, not as the final meshing architecture.
 
 ---
 
@@ -92,6 +108,11 @@ If that first milestone already reduces `xatlas` cost enough, it may be sufficie
 
 If not, an adaptive octree version can be considered later.
 
+This scope boundary remains valid even after the first implementation milestone:
+
+- the current implementation is still uniform-grid only;
+- adaptive subdivision is still deferred.
+
 ---
 
 ## First Milestone Shape
@@ -111,6 +132,8 @@ Recommended implementation shape:
 - add a dual-contouring path beside it, not as an in-place rewrite;
 - compare outputs before deciding on default behavior changes.
 
+This recommended shape is now implemented.
+
 ---
 
 ## Technical Goals
@@ -122,6 +145,13 @@ The first dual contouring implementation should focus on these goals only:
 - simple normal-aware vertex placement;
 - stable triangle emission from cell-face connectivity;
 - output compatibility with the existing `Mesh` struct.
+
+The current implementation uses:
+
+- one shared vertex per active cell;
+- edge-crossing hermite samples from the existing sampled SDF field;
+- a lightweight regularized least-squares style cell-vertex solve;
+- triangulated dual faces for downstream compatibility.
 
 The first milestone does **not** need to solve everything:
 

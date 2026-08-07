@@ -24,6 +24,12 @@ enum class ModifierMask : std::uint8_t
   TopEdges = 4
 };
 
+enum class MeshingMode : std::uint8_t
+{
+  MarchingTetrahedra = 0,
+  DualContouring = 1
+};
+
 struct Transform
 {
   Vec3 translation;
@@ -70,7 +76,11 @@ struct BuildSettings
 {
   Aabb bounds;
   float cell_size = 1.0f;
+  MeshingMode meshing_mode = MeshingMode::MarchingTetrahedra;
 };
+
+const char *meshing_mode_name(MeshingMode mode);
+bool parse_meshing_mode_name(const std::string &text, MeshingMode *mode);
 
 SceneDocument make_frame_006_blockout_scene();
 BuildSettings make_frame_006_build_settings();

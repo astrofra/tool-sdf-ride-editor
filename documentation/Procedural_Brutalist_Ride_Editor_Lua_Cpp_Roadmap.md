@@ -354,6 +354,14 @@ The detailed rationale and milestone shape are recorded in:
 
 - `documentation/Dual_Contouring_Evaluation_Plan.md`
 
+As of **August 7, 2026**, a first uniform-grid dual contouring path is also implemented as an opt-in alternative mesher.
+
+Current policy:
+
+- marching tetrahedra remains the default baseline;
+- dual contouring is enabled explicitly through meshing mode selection;
+- the current goal is measurement and comparison before any default-mode switch.
+
 Recommended rule:
 
 - positions, normals, and UVs should already be split as needed for seams and hard edges before export.

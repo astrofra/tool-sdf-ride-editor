@@ -50,6 +50,41 @@ BoxCutModifier make_box_cut_modifier(const char *name, const char *target_box_na
 
 }  // namespace
 
+const char *meshing_mode_name(MeshingMode mode)
+{
+  switch (mode)
+  {
+  case MeshingMode::MarchingTetrahedra:
+    return "marching_tetrahedra";
+  case MeshingMode::DualContouring:
+    return "dual_contouring";
+  default:
+    return "unknown";
+  }
+}
+
+bool parse_meshing_mode_name(const std::string &text, MeshingMode *mode)
+{
+  if (mode == nullptr)
+  {
+    return false;
+  }
+
+  if (text == "marching_tetrahedra")
+  {
+    *mode = MeshingMode::MarchingTetrahedra;
+    return true;
+  }
+
+  if (text == "dual_contouring")
+  {
+    *mode = MeshingMode::DualContouring;
+    return true;
+  }
+
+  return false;
+}
+
 SceneDocument make_frame_006_blockout_scene()
 {
   SceneDocument scene;
@@ -92,6 +127,7 @@ BuildSettings make_frame_006_build_settings()
   settings.bounds.min = {-40.0f, -6.0f, -20.0f};
   settings.bounds.max = {46.0f, 48.0f, 100.0f};
   settings.cell_size = 1.0f;
+  settings.meshing_mode = MeshingMode::MarchingTetrahedra;
   return settings;
 }
 
