@@ -3,7 +3,7 @@
 #   scene <name>
 #   bounds <minx> <miny> <minz> <maxx> <maxy> <maxz>
 #   cell_size <value>
-#   meshing_mode <marching_tetrahedra|dual_contouring>
+#   meshing_mode <marching_tetrahedra|dual_contouring|adaptive_dual_contouring>
 #   box <add|subtract> <name> <tx> <ty> <tz> <hx> <hy> <hz> [material_id]
 #   noise_displace_masked <name> <target_box_name> <amplitude> <frequency> <seed> <octaves> <mask> <mask_width>
 #   box_cut <name> <target_box_name> <tx> <ty> <tz> <hx> <hy> <hz>

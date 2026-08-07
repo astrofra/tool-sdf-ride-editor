@@ -58,6 +58,8 @@ const char *meshing_mode_name(MeshingMode mode)
     return "marching_tetrahedra";
   case MeshingMode::DualContouring:
     return "dual_contouring";
+  case MeshingMode::AdaptiveDualContouring:
+    return "adaptive_dual_contouring";
   default:
     return "unknown";
   }
@@ -79,6 +81,12 @@ bool parse_meshing_mode_name(const std::string &text, MeshingMode *mode)
   if (text == "dual_contouring")
   {
     *mode = MeshingMode::DualContouring;
+    return true;
+  }
+
+  if (text == "adaptive_dual_contouring")
+  {
+    *mode = MeshingMode::AdaptiveDualContouring;
     return true;
   }
 

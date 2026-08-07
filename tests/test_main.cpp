@@ -466,6 +466,81 @@ void test_dual_contouring_uv_unwrap_succeeds()
   expect_true(result.atlas_width == 256 && result.atlas_height == 256, "dual contouring unwrap should preserve requested atlas resolution");
 }
 
+void test_adaptive_dual_contouring_reduces_triangle_count_further_than_uniform_dual()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+  expect_true(
+    sdf::parse_meshing_mode_name("adaptive_dual_contouring", &scene_file.build_settings.meshing_mode),
+    "adaptive dual contouring mode name should parse");
+
+  scene_file.build_settings.cell_size = 4.0f;
+  scene_file.build_settings.meshing_mode = sdf::MeshingMode::DualContouring;
+  const sdf::SceneBuildResult uniform_dual_build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  scene_file.build_settings.meshing_mode = sdf::MeshingMode::AdaptiveDualContouring;
+  const sdf::SceneBuildResult adaptive_build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  expect_true(adaptive_build.sampled_cells == uniform_dual_build.sampled_cells, "adaptive dual contouring should keep the same finest sampled cell count");
+  expect_true(adaptive_build.occupied_cells == uniform_dual_build.occupied_cells, "adaptive dual contouring should keep the same occupied finest cell count");
+  expect_true(!adaptive_build.mesh.vertices.empty(), "adaptive dual contouring should emit vertices");
+  expect_true(!adaptive_build.mesh.triangles.empty(), "adaptive dual contouring should emit triangles");
+  expect_true(
+    adaptive_build.mesh.triangles.size() < uniform_dual_build.mesh.triangles.size(),
+    "adaptive dual contouring should reduce triangle count beyond uniform dual contouring on the sample scene");
+  expect_true(
+    adaptive_build.mesh.vertices.size() < uniform_dual_build.mesh.vertices.size(),
+    "adaptive dual contouring should reduce vertex count beyond uniform dual contouring on the sample scene");
+  expect_true(
+    adaptive_build.mesh.vertices.size() < adaptive_build.mesh.triangles.size() * 3,
+    "adaptive dual contouring should keep indexed vertex reuse");
+
+  for (const sdf::MeshTriangle &triangle : adaptive_build.mesh.triangles)
+  {
+    expect_true(triangle.i0 < adaptive_build.mesh.vertices.size(), "adaptive dual contouring triangle i0 should stay within the vertex buffer");
+    expect_true(triangle.i1 < adaptive_build.mesh.vertices.size(), "adaptive dual contouring triangle i1 should stay within the vertex buffer");
+    expect_true(triangle.i2 < adaptive_build.mesh.vertices.size(), "adaptive dual contouring triangle i2 should stay within the vertex buffer");
+  }
+
+  for (const sdf::MeshVertex &vertex : adaptive_build.mesh.vertices)
+  {
+    const float normal_length = std::sqrt(
+      vertex.normal.x * vertex.normal.x +
+      vertex.normal.y * vertex.normal.y +
+      vertex.normal.z * vertex.normal.z);
+    expect_true(normal_length > 0.5f && normal_length < 1.5f, "adaptive dual contouring normals should stay normalized");
+  }
+}
+
+void test_adaptive_dual_contouring_uv_unwrap_succeeds()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+
+  expect_true(load_ok, "sample scene file should load");
+
+  scene_file.build_settings.cell_size = 4.0f;
+  scene_file.build_settings.meshing_mode = sdf::MeshingMode::AdaptiveDualContouring;
+  const sdf::SceneBuildResult build = sdf::build_scene_mesh(scene_file.scene, scene_file.build_settings);
+
+  sdf::UvUnwrapSettings settings;
+  settings.resolution = 256;
+  settings.padding = 4;
+
+  sdf::Mesh unwrapped_mesh;
+  sdf::UvUnwrapResult result;
+  const bool unwrap_ok = sdf::unwrap_mesh_uvs(build.mesh, settings, &unwrapped_mesh, &result, &error_message);
+
+  expect_true(unwrap_ok, "adaptive dual contouring mesh should unwrap successfully");
+  expect_true(!unwrapped_mesh.vertices.empty(), "adaptive dual contouring unwrap should output vertices");
+  expect_true(!unwrapped_mesh.triangles.empty(), "adaptive dual contouring unwrap should output triangles");
+  expect_true(result.atlas_width == 256 && result.atlas_height == 256, "adaptive dual contouring unwrap should preserve requested atlas resolution");
+}
+
 void test_uv_unwrap_welded_input_reduces_topology_size()
 {
   sdf::SceneFile scene_file;
@@ -682,6 +757,8 @@ int main()
     test_uv_unwrap_generates_normalized_uvs();
     test_uv_unwrap_rejects_non_power_of_two_resolution();
     test_dual_contouring_uv_unwrap_succeeds();
+    test_adaptive_dual_contouring_reduces_triangle_count_further_than_uniform_dual();
+    test_adaptive_dual_contouring_uv_unwrap_succeeds();
     test_uv_unwrap_welded_input_reduces_topology_size();
     test_uv_unwrap_chart_debug_image_and_fragmentation_stats();
     test_ao_bake_writes_png();

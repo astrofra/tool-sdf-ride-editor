@@ -27,7 +27,8 @@ enum class ModifierMask : std::uint8_t
 enum class MeshingMode : std::uint8_t
 {
   MarchingTetrahedra = 0,
-  DualContouring = 1
+  DualContouring = 1,
+  AdaptiveDualContouring = 2
 };
 
 struct Transform

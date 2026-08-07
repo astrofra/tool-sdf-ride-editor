@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 
 #include "progress_utils.h"
@@ -40,6 +41,55 @@ struct DualCellVertex
   bool active = false;
   std::uint32_t vertex_index = std::numeric_limits<std::uint32_t>::max();
 };
+
+struct FineSurfaceCell
+{
+  bool active = false;
+  std::uint32_t sample_offset = 0;
+  std::uint8_t sample_count = 0;
+  Vec3 normal_sum = {0.0f, 0.0f, 0.0f};
+};
+
+struct AdaptiveBlockStats
+{
+  std::size_t active_cell_count = 0;
+  Vec3 normal_sum = {0.0f, 0.0f, 0.0f};
+  std::vector<HermiteSample> samples;
+};
+
+struct FaceKey
+{
+  std::array<std::uint32_t, 4> indices = {{
+    std::numeric_limits<std::uint32_t>::max(),
+    std::numeric_limits<std::uint32_t>::max(),
+    std::numeric_limits<std::uint32_t>::max(),
+    std::numeric_limits<std::uint32_t>::max()
+  }};
+  std::uint8_t count = 0;
+};
+
+struct FaceKeyHash
+{
+  std::size_t operator()(const FaceKey &key) const noexcept
+  {
+    std::size_t hash = static_cast<std::size_t>(key.count) * 1469598103934665603ull;
+    for (std::uint32_t index : key.indices)
+    {
+      hash ^= static_cast<std::size_t>(index) + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    }
+    return hash;
+  }
+};
+
+bool operator==(const FaceKey &lhs, const FaceKey &rhs)
+{
+  return lhs.count == rhs.count && lhs.indices == rhs.indices;
+}
+
+constexpr std::uint32_t kInvalidIndex = std::numeric_limits<std::uint32_t>::max();
+constexpr float kAdaptiveNormalDotThreshold = 0.96f;
+constexpr float kAdaptivePlaneErrorRatio = 0.06f;
+constexpr float kAdaptiveMinPlaneErrorInCells = 0.75f;
 
 constexpr std::array<std::array<int, 4>, 6> kCubeTetrahedra = {{
   {{0, 5, 1, 6}},
@@ -89,6 +139,16 @@ float smoothstep01(float value)
 {
   const float t = clamp01(value);
   return t * t * (3.0f - 2.0f * t);
+}
+
+int next_power_of_two(int value)
+{
+  int result = 1;
+  while (result < value && result < (1 << 30))
+  {
+    result <<= 1;
+  }
+  return std::max(result, 1);
 }
 
 std::uint32_t mix_hash(std::uint32_t value)
@@ -351,6 +411,37 @@ void append_indexed_triangle(Mesh &mesh, std::uint32_t i0, std::uint32_t i1, std
   mesh.triangles.push_back({i0, i1, i2, 0});
 }
 
+void append_oriented_triangle(
+  Mesh &mesh,
+  const std::array<std::uint32_t, 3> &triangle,
+  const Vec3 &desired_normal)
+{
+  for (std::uint32_t index : triangle)
+  {
+    if (index >= mesh.vertices.size())
+    {
+      return;
+    }
+  }
+
+  const Vec3 &p0 = mesh.vertices[triangle[0]].position;
+  const Vec3 &p1 = mesh.vertices[triangle[1]].position;
+  const Vec3 &p2 = mesh.vertices[triangle[2]].position;
+  const Vec3 face_normal = cross(p1 - p0, p2 - p0);
+  if (length_squared(face_normal) <= 1.0e-10f)
+  {
+    return;
+  }
+
+  if (dot(face_normal, desired_normal) < 0.0f)
+  {
+    append_indexed_triangle(mesh, triangle[0], triangle[2], triangle[1]);
+    return;
+  }
+
+  append_indexed_triangle(mesh, triangle[0], triangle[1], triangle[2]);
+}
+
 void append_oriented_quad(
   Mesh &mesh,
   const std::array<std::uint32_t, 4> &quad,
@@ -388,6 +479,18 @@ void append_oriented_quad(
 
   append_indexed_triangle(mesh, ordered[0], ordered[1], ordered[2]);
   append_indexed_triangle(mesh, ordered[0], ordered[2], ordered[3]);
+}
+
+FaceKey make_face_key(const std::array<std::uint32_t, 4> &indices, std::uint8_t count)
+{
+  FaceKey key;
+  key.count = count;
+  for (std::uint8_t i = 0; i < count; ++i)
+  {
+    key.indices[i] = indices[i];
+  }
+  std::sort(key.indices.begin(), key.indices.begin() + count);
+  return key;
 }
 
 bool solve_linear_system_3x3(std::array<std::array<float, 4>, 3> matrix, Vec3 *solution)
@@ -519,6 +622,109 @@ Vec3 solve_dual_vertex_position(
   solution.y = clampf(solution.y, cell_min.y, cell_max.y);
   solution.z = clampf(solution.z, cell_min.z, cell_max.z);
   return solution;
+}
+
+std::size_t count_active_cells_in_box(
+  const std::vector<std::uint32_t> &prefix_counts,
+  const GridDimensions &prefix_dims,
+  int x0,
+  int y0,
+  int z0,
+  int x1,
+  int y1,
+  int z1)
+{
+  x0 = std::clamp(x0, 0, prefix_dims.nx - 1);
+  y0 = std::clamp(y0, 0, prefix_dims.ny - 1);
+  z0 = std::clamp(z0, 0, prefix_dims.nz - 1);
+  x1 = std::clamp(x1, 0, prefix_dims.nx - 1);
+  y1 = std::clamp(y1, 0, prefix_dims.ny - 1);
+  z1 = std::clamp(z1, 0, prefix_dims.nz - 1);
+
+  if (x0 >= x1 || y0 >= y1 || z0 >= z1)
+  {
+    return 0;
+  }
+
+  const auto sample_prefix =
+    [&](int x, int y, int z) -> std::uint32_t
+    {
+      return prefix_counts[grid_index(prefix_dims, x, y, z)];
+    };
+
+  return static_cast<std::size_t>(
+    sample_prefix(x1, y1, z1) -
+    sample_prefix(x0, y1, z1) -
+    sample_prefix(x1, y0, z1) -
+    sample_prefix(x1, y1, z0) +
+    sample_prefix(x0, y0, z1) +
+    sample_prefix(x0, y1, z0) +
+    sample_prefix(x1, y0, z0) -
+    sample_prefix(x0, y0, z0));
+}
+
+AdaptiveBlockStats collect_adaptive_block_stats(
+  const std::vector<FineSurfaceCell> &fine_cells,
+  const std::vector<HermiteSample> &sample_pool,
+  const GridDimensions &cell_dims,
+  int x0,
+  int y0,
+  int z0,
+  int x1,
+  int y1,
+  int z1)
+{
+  AdaptiveBlockStats stats;
+
+  for (int z = z0; z < z1; ++z)
+  {
+    for (int y = y0; y < y1; ++y)
+    {
+      for (int x = x0; x < x1; ++x)
+      {
+        const FineSurfaceCell &fine_cell = fine_cells[grid_index(cell_dims, x, y, z)];
+        if (!fine_cell.active)
+        {
+          continue;
+        }
+
+        ++stats.active_cell_count;
+        stats.normal_sum += fine_cell.normal_sum;
+        for (std::uint32_t i = 0; i < fine_cell.sample_count; ++i)
+        {
+          stats.samples.push_back(sample_pool[fine_cell.sample_offset + i]);
+        }
+      }
+    }
+  }
+
+  return stats;
+}
+
+bool adaptive_block_is_flat(
+  const AdaptiveBlockStats &stats,
+  const Vec3 &position,
+  float leaf_world_size,
+  float min_cell_size)
+{
+  if (stats.active_cell_count == 0 || stats.samples.empty())
+  {
+    return false;
+  }
+
+  const Vec3 average_normal = normalized(stats.normal_sum);
+  float min_normal_dot = 1.0f;
+  float max_plane_error = 0.0f;
+
+  for (const HermiteSample &sample : stats.samples)
+  {
+    const Vec3 sample_normal = normalized(sample.normal);
+    min_normal_dot = std::min(min_normal_dot, dot(sample_normal, average_normal));
+    max_plane_error = std::max(max_plane_error, std::fabs(dot(sample_normal, position - sample.position)));
+  }
+
+  const float plane_error_limit = std::max(min_cell_size * kAdaptiveMinPlaneErrorInCells, leaf_world_size * kAdaptivePlaneErrorRatio);
+  return min_normal_dot >= kAdaptiveNormalDotThreshold && max_plane_error <= plane_error_limit;
 }
 
 void polygonize_tetrahedron(
@@ -958,6 +1164,546 @@ void build_dual_contouring_mesh(
   connect_progress.finish();
 }
 
+void assign_adaptive_leaf_vertex(
+  const SceneDocument &scene,
+  const BuildSettings &settings,
+  const GridDimensions &cell_dims,
+  const std::vector<FineSurfaceCell> &fine_cells,
+  const AdaptiveBlockStats &stats,
+  int x0,
+  int y0,
+  int z0,
+  int size_cells,
+  float gradient_epsilon,
+  SceneBuildResult *result,
+  std::vector<std::uint32_t> *fine_cell_vertex_lookup,
+  std::uint64_t *assigned_active_cells,
+  detail::ProgressScope *progress)
+{
+  const Vec3 cell_min = {
+    settings.bounds.min.x + static_cast<float>(x0) * settings.cell_size,
+    settings.bounds.min.y + static_cast<float>(y0) * settings.cell_size,
+    settings.bounds.min.z + static_cast<float>(z0) * settings.cell_size
+  };
+  const float world_size = static_cast<float>(size_cells) * settings.cell_size;
+  const Vec3 cell_max = {
+    cell_min.x + world_size,
+    cell_min.y + world_size,
+    cell_min.z + world_size
+  };
+  const Vec3 position = solve_dual_vertex_position(stats.samples, cell_min, cell_max);
+  const Vec3 normal = length_squared(stats.normal_sum) > 1.0e-8f
+    ? normalized(stats.normal_sum)
+    : estimate_surface_normal(scene, position, gradient_epsilon);
+  const std::uint32_t vertex_index = static_cast<std::uint32_t>(result->mesh.vertices.size());
+  result->mesh.vertices.push_back({position, normal, compute_default_uv(position, normal)});
+
+  const int x1 = std::min(x0 + size_cells, cell_dims.nx);
+  const int y1 = std::min(y0 + size_cells, cell_dims.ny);
+  const int z1 = std::min(z0 + size_cells, cell_dims.nz);
+  for (int z = z0; z < z1; ++z)
+  {
+    for (int y = y0; y < y1; ++y)
+    {
+      for (int x = x0; x < x1; ++x)
+      {
+        const std::size_t index = grid_index(cell_dims, x, y, z);
+        if (!fine_cells[index].active)
+        {
+          continue;
+        }
+
+        (*fine_cell_vertex_lookup)[index] = vertex_index;
+      }
+    }
+  }
+
+  *assigned_active_cells += static_cast<std::uint64_t>(stats.active_cell_count);
+  progress->update(*assigned_active_cells);
+}
+
+void build_adaptive_leaf_vertices_recursive(
+  const SceneDocument &scene,
+  const BuildSettings &settings,
+  const GridDimensions &cell_dims,
+  const GridDimensions &prefix_dims,
+  const std::vector<FineSurfaceCell> &fine_cells,
+  const std::vector<HermiteSample> &sample_pool,
+  const std::vector<std::uint32_t> &active_prefix_counts,
+  int x0,
+  int y0,
+  int z0,
+  int size_cells,
+  float gradient_epsilon,
+  SceneBuildResult *result,
+  std::vector<std::uint32_t> *fine_cell_vertex_lookup,
+  std::uint64_t *assigned_active_cells,
+  detail::ProgressScope *progress)
+{
+  const int x1 = std::min(x0 + size_cells, cell_dims.nx);
+  const int y1 = std::min(y0 + size_cells, cell_dims.ny);
+  const int z1 = std::min(z0 + size_cells, cell_dims.nz);
+  const std::size_t active_cell_count = count_active_cells_in_box(
+    active_prefix_counts,
+    prefix_dims,
+    x0,
+    y0,
+    z0,
+    x1,
+    y1,
+    z1);
+  if (active_cell_count == 0)
+  {
+    return;
+  }
+
+  const AdaptiveBlockStats stats = collect_adaptive_block_stats(
+    fine_cells,
+    sample_pool,
+    cell_dims,
+    x0,
+    y0,
+    z0,
+    x1,
+    y1,
+    z1);
+  if (stats.active_cell_count == 0 || stats.samples.empty())
+  {
+    return;
+  }
+
+  if (size_cells <= 1)
+  {
+    assign_adaptive_leaf_vertex(
+      scene,
+      settings,
+      cell_dims,
+      fine_cells,
+      stats,
+      x0,
+      y0,
+      z0,
+      1,
+      gradient_epsilon,
+      result,
+      fine_cell_vertex_lookup,
+      assigned_active_cells,
+      progress);
+    return;
+  }
+
+  const float world_size = static_cast<float>(size_cells) * settings.cell_size;
+  const Vec3 cell_min = {
+    settings.bounds.min.x + static_cast<float>(x0) * settings.cell_size,
+    settings.bounds.min.y + static_cast<float>(y0) * settings.cell_size,
+    settings.bounds.min.z + static_cast<float>(z0) * settings.cell_size
+  };
+  const Vec3 cell_max = {
+    cell_min.x + world_size,
+    cell_min.y + world_size,
+    cell_min.z + world_size
+  };
+  const Vec3 position = solve_dual_vertex_position(stats.samples, cell_min, cell_max);
+
+  if (adaptive_block_is_flat(stats, position, world_size, settings.cell_size))
+  {
+    assign_adaptive_leaf_vertex(
+      scene,
+      settings,
+      cell_dims,
+      fine_cells,
+      stats,
+      x0,
+      y0,
+      z0,
+      size_cells,
+      gradient_epsilon,
+      result,
+      fine_cell_vertex_lookup,
+      assigned_active_cells,
+      progress);
+    return;
+  }
+
+  const int child_size = std::max(size_cells / 2, 1);
+  for (int child_z = 0; child_z < 2; ++child_z)
+  {
+    for (int child_y = 0; child_y < 2; ++child_y)
+    {
+      for (int child_x = 0; child_x < 2; ++child_x)
+      {
+        build_adaptive_leaf_vertices_recursive(
+          scene,
+          settings,
+          cell_dims,
+          prefix_dims,
+          fine_cells,
+          sample_pool,
+          active_prefix_counts,
+          x0 + child_x * child_size,
+          y0 + child_y * child_size,
+          z0 + child_z * child_size,
+          child_size,
+          gradient_epsilon,
+          result,
+          fine_cell_vertex_lookup,
+          assigned_active_cells,
+          progress);
+      }
+    }
+  }
+}
+
+template <typename SampleValueFn, typename GridPointFn>
+void build_adaptive_dual_contouring_mesh(
+  const SceneDocument &scene,
+  const BuildSettings &settings,
+  const GridDimensions &cell_dims,
+  const GridDimensions &point_dims,
+  const SampleValueFn &sample_value,
+  const GridPointFn &grid_point_position,
+  SceneBuildResult *result,
+  const ProgressCallback &progress_callback)
+{
+  const float half_cell = settings.cell_size * 0.5f;
+  const float gradient_epsilon = std::max(settings.cell_size * 0.25f, 1.0e-3f);
+  std::vector<FineSurfaceCell> fine_cells(
+    static_cast<std::size_t>(cell_dims.nx) * static_cast<std::size_t>(cell_dims.ny) * static_cast<std::size_t>(cell_dims.nz));
+  std::vector<HermiteSample> sample_pool;
+
+  detail::ProgressScope fine_cell_progress(
+    progress_callback,
+    "Build adaptive fine cells",
+    static_cast<std::uint64_t>(cell_dims.nz) * static_cast<std::uint64_t>(cell_dims.ny));
+  std::uint64_t processed_rows = 0;
+
+  for (int z = 0; z < cell_dims.nz; ++z)
+  {
+    for (int y = 0; y < cell_dims.ny; ++y)
+    {
+      for (int x = 0; x < cell_dims.nx; ++x)
+      {
+        const std::array<Vec3, 8> cube_points = {{
+          grid_point_position(x + 0, y + 0, z + 0),
+          grid_point_position(x + 1, y + 0, z + 0),
+          grid_point_position(x + 1, y + 1, z + 0),
+          grid_point_position(x + 0, y + 1, z + 0),
+          grid_point_position(x + 0, y + 0, z + 1),
+          grid_point_position(x + 1, y + 0, z + 1),
+          grid_point_position(x + 1, y + 1, z + 1),
+          grid_point_position(x + 0, y + 1, z + 1)
+        }};
+        const std::array<float, 8> cube_values = {{
+          sample_value(x + 0, y + 0, z + 0),
+          sample_value(x + 1, y + 0, z + 0),
+          sample_value(x + 1, y + 1, z + 0),
+          sample_value(x + 0, y + 1, z + 0),
+          sample_value(x + 0, y + 0, z + 1),
+          sample_value(x + 1, y + 0, z + 1),
+          sample_value(x + 1, y + 1, z + 1),
+          sample_value(x + 0, y + 1, z + 1)
+        }};
+
+        const Vec3 cell_min = cube_points[0];
+        const Vec3 center = {cell_min.x + half_cell, cell_min.y + half_cell, cell_min.z + half_cell};
+        if (evaluate_scene_sdf(scene, center) <= 0.0f)
+        {
+          ++result->occupied_cells;
+        }
+
+        bool has_inside = false;
+        bool has_outside = false;
+        for (float value : cube_values)
+        {
+          has_inside = has_inside || is_inside(value);
+          has_outside = has_outside || !is_inside(value);
+        }
+
+        if (!(has_inside && has_outside))
+        {
+          continue;
+        }
+
+        FineSurfaceCell &fine_cell = fine_cells[grid_index(cell_dims, x, y, z)];
+        fine_cell.active = true;
+        fine_cell.sample_offset = static_cast<std::uint32_t>(sample_pool.size());
+
+        for (const std::array<int, 2> &edge : kCubeEdges)
+        {
+          const int a = edge[0];
+          const int b = edge[1];
+          if (!has_sign_change(cube_values[a], cube_values[b]))
+          {
+            continue;
+          }
+
+          const SurfaceVertex intersection = interpolate_surface_vertex(
+            scene,
+            cube_points[a],
+            cube_values[a],
+            cube_points[b],
+            cube_values[b],
+            gradient_epsilon);
+          sample_pool.push_back({intersection.position, intersection.normal});
+          fine_cell.normal_sum += intersection.normal;
+        }
+
+        fine_cell.sample_count = static_cast<std::uint8_t>(sample_pool.size() - fine_cell.sample_offset);
+      }
+
+      ++processed_rows;
+      fine_cell_progress.update(processed_rows);
+    }
+  }
+
+  fine_cell_progress.finish();
+
+  const GridDimensions prefix_dims = {cell_dims.nx + 1, cell_dims.ny + 1, cell_dims.nz + 1};
+  std::vector<std::uint32_t> active_prefix_counts(
+    static_cast<std::size_t>(prefix_dims.nx) * static_cast<std::size_t>(prefix_dims.ny) * static_cast<std::size_t>(prefix_dims.nz),
+    0u);
+
+  for (int z = 1; z < prefix_dims.nz; ++z)
+  {
+    for (int y = 1; y < prefix_dims.ny; ++y)
+    {
+      for (int x = 1; x < prefix_dims.nx; ++x)
+      {
+        const std::uint32_t active_value = fine_cells[grid_index(cell_dims, x - 1, y - 1, z - 1)].active ? 1u : 0u;
+        active_prefix_counts[grid_index(prefix_dims, x, y, z)] =
+          active_value +
+          active_prefix_counts[grid_index(prefix_dims, x - 1, y, z)] +
+          active_prefix_counts[grid_index(prefix_dims, x, y - 1, z)] +
+          active_prefix_counts[grid_index(prefix_dims, x, y, z - 1)] -
+          active_prefix_counts[grid_index(prefix_dims, x - 1, y - 1, z)] -
+          active_prefix_counts[grid_index(prefix_dims, x - 1, y, z - 1)] -
+          active_prefix_counts[grid_index(prefix_dims, x, y - 1, z - 1)] +
+          active_prefix_counts[grid_index(prefix_dims, x - 1, y - 1, z - 1)];
+      }
+    }
+  }
+
+  const std::size_t total_active_cells = count_active_cells_in_box(
+    active_prefix_counts,
+    prefix_dims,
+    0,
+    0,
+    0,
+    cell_dims.nx,
+    cell_dims.ny,
+    cell_dims.nz);
+  std::vector<std::uint32_t> fine_cell_vertex_lookup(fine_cells.size(), kInvalidIndex);
+  detail::ProgressScope adaptive_leaf_progress(
+    progress_callback,
+    "Build adaptive leaf vertices",
+    std::max<std::uint64_t>(static_cast<std::uint64_t>(total_active_cells), 1u));
+  std::uint64_t assigned_active_cells = 0;
+  const int root_size_cells = next_power_of_two(std::max(cell_dims.nx, std::max(cell_dims.ny, cell_dims.nz)));
+
+  build_adaptive_leaf_vertices_recursive(
+    scene,
+    settings,
+    cell_dims,
+    prefix_dims,
+    fine_cells,
+    sample_pool,
+    active_prefix_counts,
+    0,
+    0,
+    0,
+    root_size_cells,
+    gradient_epsilon,
+    result,
+    &fine_cell_vertex_lookup,
+    &assigned_active_cells,
+    &adaptive_leaf_progress);
+  adaptive_leaf_progress.finish();
+
+  auto fine_cell_vertex_index = [&](int x, int y, int z) -> std::uint32_t
+  {
+    if (x < 0 || y < 0 || z < 0 || x >= cell_dims.nx || y >= cell_dims.ny || z >= cell_dims.nz)
+    {
+      return kInvalidIndex;
+    }
+    return fine_cell_vertex_lookup[grid_index(cell_dims, x, y, z)];
+  };
+
+  auto emit_adaptive_face =
+    [&](const std::array<std::uint32_t, 4> &raw_indices, const Vec3 &desired_normal, std::unordered_set<FaceKey, FaceKeyHash> *emitted_faces)
+    {
+      std::array<std::uint32_t, 4> unique_indices = {{
+        kInvalidIndex,
+        kInvalidIndex,
+        kInvalidIndex,
+        kInvalidIndex
+      }};
+      int unique_count = 0;
+
+      for (std::uint32_t index : raw_indices)
+      {
+        if (index == kInvalidIndex)
+        {
+          return;
+        }
+
+        bool seen = false;
+        for (int i = 0; i < unique_count; ++i)
+        {
+          if (unique_indices[i] == index)
+          {
+            seen = true;
+            break;
+          }
+        }
+
+        if (!seen)
+        {
+          unique_indices[unique_count++] = index;
+        }
+      }
+
+      if (unique_count < 3)
+      {
+        return;
+      }
+
+      const FaceKey key = make_face_key(unique_indices, static_cast<std::uint8_t>(unique_count));
+      if (!emitted_faces->insert(key).second)
+      {
+        return;
+      }
+
+      if (unique_count == 3)
+      {
+        append_oriented_triangle(
+          result->mesh,
+          {{unique_indices[0], unique_indices[1], unique_indices[2]}},
+          desired_normal);
+        return;
+      }
+
+      append_oriented_quad(result->mesh, unique_indices, desired_normal);
+    };
+
+  const std::uint64_t connect_total =
+    static_cast<std::uint64_t>(std::max(point_dims.nz - 1, 0)) * static_cast<std::uint64_t>(std::max(point_dims.ny - 2, 0)) +
+    static_cast<std::uint64_t>(std::max(point_dims.nz - 1, 0)) * static_cast<std::uint64_t>(std::max(point_dims.nx - 2, 0)) +
+    static_cast<std::uint64_t>(std::max(point_dims.ny - 1, 0)) * static_cast<std::uint64_t>(std::max(point_dims.nx - 2, 0));
+  detail::ProgressScope connect_progress(
+    progress_callback,
+    "Connect adaptive faces",
+    std::max<std::uint64_t>(connect_total, 1u));
+  std::uint64_t connected_rows = 0;
+  std::unordered_set<FaceKey, FaceKeyHash> emitted_faces;
+
+  for (int z = 1; z < point_dims.nz - 1; ++z)
+  {
+    for (int y = 1; y < point_dims.ny - 1; ++y)
+    {
+      for (int x = 0; x < cell_dims.nx; ++x)
+      {
+        const float value_a = sample_value(x, y, z);
+        const float value_b = sample_value(x + 1, y, z);
+        if (!has_sign_change(value_a, value_b))
+        {
+          continue;
+        }
+
+        emit_adaptive_face(
+          {{
+            fine_cell_vertex_index(x, y - 1, z - 1),
+            fine_cell_vertex_index(x, y, z - 1),
+            fine_cell_vertex_index(x, y, z),
+            fine_cell_vertex_index(x, y - 1, z)
+          }},
+          interpolate_surface_vertex(
+            scene,
+            grid_point_position(x, y, z),
+            value_a,
+            grid_point_position(x + 1, y, z),
+            value_b,
+            gradient_epsilon).normal,
+          &emitted_faces);
+      }
+
+      ++connected_rows;
+      connect_progress.update(connected_rows);
+    }
+  }
+
+  for (int z = 1; z < point_dims.nz - 1; ++z)
+  {
+    for (int x = 1; x < point_dims.nx - 1; ++x)
+    {
+      for (int y = 0; y < cell_dims.ny; ++y)
+      {
+        const float value_a = sample_value(x, y, z);
+        const float value_b = sample_value(x, y + 1, z);
+        if (!has_sign_change(value_a, value_b))
+        {
+          continue;
+        }
+
+        emit_adaptive_face(
+          {{
+            fine_cell_vertex_index(x - 1, y, z - 1),
+            fine_cell_vertex_index(x, y, z - 1),
+            fine_cell_vertex_index(x, y, z),
+            fine_cell_vertex_index(x - 1, y, z)
+          }},
+          interpolate_surface_vertex(
+            scene,
+            grid_point_position(x, y, z),
+            value_a,
+            grid_point_position(x, y + 1, z),
+            value_b,
+            gradient_epsilon).normal,
+          &emitted_faces);
+      }
+
+      ++connected_rows;
+      connect_progress.update(connected_rows);
+    }
+  }
+
+  for (int y = 1; y < point_dims.ny - 1; ++y)
+  {
+    for (int x = 1; x < point_dims.nx - 1; ++x)
+    {
+      for (int z = 0; z < cell_dims.nz; ++z)
+      {
+        const float value_a = sample_value(x, y, z);
+        const float value_b = sample_value(x, y, z + 1);
+        if (!has_sign_change(value_a, value_b))
+        {
+          continue;
+        }
+
+        emit_adaptive_face(
+          {{
+            fine_cell_vertex_index(x - 1, y - 1, z),
+            fine_cell_vertex_index(x, y - 1, z),
+            fine_cell_vertex_index(x, y, z),
+            fine_cell_vertex_index(x - 1, y, z)
+          }},
+          interpolate_surface_vertex(
+            scene,
+            grid_point_position(x, y, z),
+            value_a,
+            grid_point_position(x, y, z + 1),
+            value_b,
+            gradient_epsilon).normal,
+          &emitted_faces);
+      }
+
+      ++connected_rows;
+      connect_progress.update(connected_rows);
+    }
+  }
+
+  connect_progress.finish();
+}
+
 }  // namespace
 
 float evaluate_box_sdf(const SdfBox &box, const Vec3 &point)
@@ -1072,6 +1818,18 @@ SceneBuildResult build_scene_mesh(
       scene,
       settings,
       cell_dims,
+      sample_value,
+      grid_point_position,
+      &result,
+      progress_callback);
+    break;
+
+  case MeshingMode::AdaptiveDualContouring:
+    build_adaptive_dual_contouring_mesh(
+      scene,
+      settings,
+      cell_dims,
+      point_dims,
       sample_value,
       grid_point_position,
       &result,

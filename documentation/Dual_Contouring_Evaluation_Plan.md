@@ -4,6 +4,7 @@
 
 Planned on **August 7, 2026**.
 First uniform-grid milestone implemented on **August 7, 2026**.
+Adaptive octree follow-up milestone documented on **August 7, 2026**.
 
 This note records the current design and technical decision to evaluate dual contouring as the next meshing evolution milestone.
 
@@ -267,3 +268,7 @@ If the uniform-grid milestone is successful, the next meshing questions become:
 - automatic meshing mode selection by scene or quality preset.
 
 These are explicitly **deferred** until the first comparison milestone is implemented and measured.
+
+The next adaptive milestone is now tracked in:
+
+- `documentation/Adaptive_Dual_Contouring_Octree_Milestone.md`

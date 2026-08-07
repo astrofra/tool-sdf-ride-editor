@@ -427,7 +427,7 @@ bool load_scene_file(
           error_message,
           input_path,
           line_number,
-          "meshing_mode must be 'marching_tetrahedra' or 'dual_contouring'");
+          "meshing_mode must be 'marching_tetrahedra', 'dual_contouring', or 'adaptive_dual_contouring'");
       }
       continue;
     }

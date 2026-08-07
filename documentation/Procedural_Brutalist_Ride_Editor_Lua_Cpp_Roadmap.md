@@ -356,11 +356,18 @@ The detailed rationale and milestone shape are recorded in:
 
 As of **August 7, 2026**, a first uniform-grid dual contouring path is also implemented as an opt-in alternative mesher.
 
+As of **August 7, 2026**, the next follow-up milestone is an opt-in adaptive octree variant intended to reduce tessellation further on broad flat surfaces while keeping finer resolution around edges and damaged zones.
+
 Current policy:
 
 - marching tetrahedra remains the default baseline;
 - dual contouring is enabled explicitly through meshing mode selection;
+- adaptive dual contouring should also remain opt-in until its topology and unwrap behavior are measured on the production scene;
 - the current goal is measurement and comparison before any default-mode switch.
+
+The adaptive milestone is tracked in:
+
+- `documentation/Adaptive_Dual_Contouring_Octree_Milestone.md`
 
 Recommended rule:
 

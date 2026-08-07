@@ -242,7 +242,7 @@ void print_usage()
     << "               [--ao-samples N] [--ao-max-distance F]\n"
     << "\n"
     << "Notes:\n"
-    << "  --meshing-mode accepts 'marching_tetrahedra' or 'dual_contouring'.\n"
+    << "  --meshing-mode accepts 'marching_tetrahedra', 'dual_contouring', or 'adaptive_dual_contouring'.\n"
     << "  --uv-resolution must be a power of two and is treated as an exact atlas size.\n";
 }
 
