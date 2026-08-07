@@ -17,12 +17,12 @@ struct AoBakeSettings
   int width = 0;
   int height = 0;
   int min_ao_samples = 4;
-  int max_ao_samples = 16;
-  int denoise_passes = 0;
-  int denoise_radius = 1;
+  int max_ao_samples = 128;
+  int denoise_passes = 2;
+  int denoise_radius = 4;
   int dilation_passes = -1;
   float ao_error_threshold = 0.03f;
-  float ao_max_distance = 12.0f;
+  float ao_max_distance = 25.0f;
   bool flip_v = true;
   std::uint32_t seed = 1337;
 };

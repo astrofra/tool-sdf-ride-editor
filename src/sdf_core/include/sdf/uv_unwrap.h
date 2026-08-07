@@ -13,7 +13,7 @@ namespace sdf
 struct UvUnwrapSettings
 {
   std::uint32_t resolution = 1024;
-  std::uint32_t padding = 4;
+  std::uint32_t padding = 8;
   std::uint32_t max_chart_size = 0;
   std::uint32_t chart_max_iterations = 4;
   float texels_per_unit = 0.0f;
