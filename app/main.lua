@@ -6,6 +6,9 @@ local window_title = "SDF Ride Editor"
 local label_view_id = 254
 local imgui_view_id = 255
 
+local background_clear_r = 24
+local background_clear_g = 28
+local background_clear_b = 34
 local grid_half_extent = 25
 local grid_spacing = 1
 local grid_snap_step = grid_spacing * 2
@@ -14,9 +17,13 @@ local grid_height = 0.0
 local measurement_height = 0.06
 local measurement_arrow_length = 1.25
 local measurement_arrow_angle = math.rad(28)
-local measurement_label_lift = 0.001
-local measurement_label_scale = 0.02
+local measurement_label_lift = 0.012
+local measurement_label_scale = 0.04
 local measurement_label_gap_padding = 0.25
+local measurement_backdrop_lift = 0.002
+local measurement_backdrop_thickness = 0.002
+local measurement_backdrop_padding_x = 0.35
+local measurement_backdrop_padding_z = 0.18
 local camera_drive = 0.0
 local camera_z_velocity = 0.0
 local camera_translation_speed = 16.0
@@ -92,6 +99,15 @@ local function create_material(shader_ref, r, g, b)
     "uSpecularColor", hg.Vec4I(r, g, b))
 end
 
+local function create_emissive_material(shader_ref, r, g, b)
+  local material = hg.CreateMaterial(
+    shader_ref,
+    "uDiffuseColor", hg.Vec4I(0, 0, 0),
+    "uSpecularColor", hg.Vec4I(0, 0, 0))
+  hg.SetMaterialValue(material, "uSelfColor", hg.Vec4(r / 255, g / 255, b / 255, 1.0))
+  return material
+end
+
 local function set_line_transform(transform, position, yaw, length, thickness)
   transform:SetPos(position)
   transform:SetRot(hg.Vec3(0, yaw, 0))
@@ -109,6 +125,12 @@ end
 
 local function yaw_from_xz(direction)
   return math.atan(direction.z, direction.x)
+end
+
+local function distance_on_line(start_pos, line_direction, point)
+  return (point.x - start_pos.x) * line_direction.x +
+    (point.y - start_pos.y) * line_direction.y +
+    (point.z - start_pos.z) * line_direction.z
 end
 
 local function clip_line_to_rect(x0, y0, x1, y1, min_x, min_y, max_x, max_y)
@@ -158,7 +180,40 @@ local function clip_line_to_rect(x0, y0, x1, y1, min_x, min_y, max_x, max_y)
   return true, x0 + dx * t0, y0 + dy * t0, x0 + dx * t1, y0 + dy * t1
 end
 
-local function compute_visible_measurement_anchor(
+local function unproject_screen_to_horizontal_plane(
+  inverse_projection_matrix,
+  camera_world,
+  resolution,
+  screen_x,
+  screen_y,
+  plane_y,
+  fallback)
+  local near_ok
+  local near_view
+  near_ok, near_view = hg.UnprojectFromScreenSpace(
+    inverse_projection_matrix,
+    hg.Vec3(screen_x, screen_y, 0.0),
+    resolution)
+
+  local far_ok
+  local far_view
+  far_ok, far_view = hg.UnprojectFromScreenSpace(
+    inverse_projection_matrix,
+    hg.Vec3(screen_x, screen_y, 1.0),
+    resolution)
+
+  if not near_ok or not far_ok then
+    return false, fallback
+  end
+
+  local ray_origin = camera_world * near_view
+  local ray_target = camera_world * far_view
+  local ray_direction = hg.Normalize(ray_target - ray_origin)
+
+  return true, intersect_horizontal_plane(ray_origin, ray_direction, plane_y, fallback)
+end
+
+local function compute_visible_measurement_segment(
   projection_matrix,
   inverse_projection_matrix,
   view_matrix,
@@ -166,11 +221,14 @@ local function compute_visible_measurement_anchor(
   resolution,
   start_pos,
   end_pos)
+  local delta = end_pos - start_pos
+  local distance = hg.Len(delta)
+  local line_direction = distance > 0.0001 and delta / distance or hg.Vec3(1, 0, 0)
   local _, start_screen = hg.ProjectToScreenSpace(projection_matrix, view_matrix * start_pos, resolution)
   local _, end_screen = hg.ProjectToScreenSpace(projection_matrix, view_matrix * end_pos, resolution)
 
   if start_screen.z < 0.0 and end_screen.z < 0.0 then
-    return false, (start_pos + end_pos) * 0.5
+    return false, 0.0, 0.0
   end
 
   local is_visible
@@ -189,44 +247,52 @@ local function compute_visible_measurement_anchor(
     resolution.y)
 
   if not is_visible then
-    return false, (start_pos + end_pos) * 0.5
+    return false, 0.0, 0.0
   end
 
-  local screen_mid = hg.Vec3((clip_x0 + clip_x1) * 0.5, (clip_y0 + clip_y1) * 0.5, 0.0)
-  local near_ok
-  local near_view
-  near_ok, near_view = hg.UnprojectFromScreenSpace(inverse_projection_matrix, screen_mid, resolution)
-
-  local far_ok
-  local far_view
-  far_ok, far_view = hg.UnprojectFromScreenSpace(
+  local start_ok
+  local visible_start_world
+  start_ok, visible_start_world = unproject_screen_to_horizontal_plane(
     inverse_projection_matrix,
-    hg.Vec3(screen_mid.x, screen_mid.y, 1.0),
-    resolution)
+    camera_world,
+    resolution,
+    clip_x0,
+    clip_y0,
+    measurement_height,
+    start_pos)
 
-  if not near_ok or not far_ok then
-    return false, (start_pos + end_pos) * 0.5
+  local end_ok
+  local visible_end_world
+  end_ok, visible_end_world = unproject_screen_to_horizontal_plane(
+    inverse_projection_matrix,
+    camera_world,
+    resolution,
+    clip_x1,
+    clip_y1,
+    measurement_height,
+    end_pos)
+
+  if not start_ok or not end_ok then
+    return false, 0.0, 0.0
   end
 
-  local ray_origin = camera_world * near_view
-  local ray_target = camera_world * far_view
-  local ray_direction = hg.Normalize(ray_target - ray_origin)
+  local visible_start_distance = math.max(0.0, math.min(distance_on_line(start_pos, line_direction, visible_start_world), distance))
+  local visible_end_distance = math.max(0.0, math.min(distance_on_line(start_pos, line_direction, visible_end_world), distance))
 
-  return true, intersect_horizontal_plane(ray_origin, ray_direction, measurement_height, (start_pos + end_pos) * 0.5)
+  if visible_start_distance > visible_end_distance then
+    visible_start_distance, visible_end_distance = visible_end_distance, visible_start_distance
+  end
+
+  return visible_end_distance - visible_start_distance > 0.001, visible_start_distance, visible_end_distance
 end
 
-local function compute_measurement_label_transform(start_pos, end_pos, anchor_pos, gap_half_length)
+local function compute_measurement_label_transform(start_pos, end_pos, anchor_distance)
   local delta = end_pos - start_pos
   local distance = hg.Len(delta)
   local line_direction = distance > 0.0001 and delta / distance or hg.Vec3(1, 0, 0)
   local line_yaw = yaw_from_xz(line_direction)
-  local mid = anchor_pos or (start_pos + end_pos) * 0.5
-  local anchor_distance =
-    (mid.x - start_pos.x) * line_direction.x +
-    (mid.y - start_pos.y) * line_direction.y +
-    (mid.z - start_pos.z) * line_direction.z
-  anchor_distance = math.max(gap_half_length, math.min(anchor_distance, distance - gap_half_length))
-  local label_anchor = start_pos + line_direction * anchor_distance
+  local clamped_anchor_distance = math.max(0.0, math.min(anchor_distance, distance))
+  local label_anchor = start_pos + line_direction * clamped_anchor_distance
   local label_position = hg.Vec3(
     label_anchor.x,
     measurement_height + measurement_label_lift,
@@ -236,7 +302,7 @@ local function compute_measurement_label_transform(start_pos, end_pos, anchor_po
     hg.Vec3(hg.Deg(-90), hg.Deg(180) - line_yaw, 0),
     hg.Vec3(measurement_label_scale, measurement_label_scale, measurement_label_scale))
 
-  return label_matrix, anchor_distance
+  return label_matrix, label_anchor, line_yaw
 end
 
 local function create_grid_nodes(scene, line_ref, grid_material, x_axis_material, z_axis_material)
@@ -274,15 +340,32 @@ local function update_grid_nodes(grid_x_nodes, grid_z_nodes, center)
   end
 end
 
-local function create_measurement_nodes(scene, line_ref, measurement_material)
-  return {
+local function create_measurement_nodes(scene, line_ref, measurement_material, backdrop_material)
+  local nodes = {
     shaft_a = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
     shaft_b = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
     start_a = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
     start_b = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
     end_a = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
-    end_b = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material})
+    end_b = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
+    backdrop = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {backdrop_material})
   }
+
+  nodes.backdrop:Disable()
+  return nodes
+end
+
+local function update_measurement_backdrop_node(node, center_pos, line_yaw, width, depth, is_visible)
+  if not is_visible then
+    node:Disable()
+    return
+  end
+
+  local transform = node:GetTransform()
+  transform:SetPos(hg.Vec3(center_pos.x, measurement_height + measurement_backdrop_lift, center_pos.z))
+  transform:SetRot(hg.Vec3(0, line_yaw, 0))
+  transform:SetScale(hg.Vec3(width, measurement_backdrop_thickness, depth))
+  node:Enable()
 end
 
 local function update_measurement_nodes(nodes, start_pos, end_pos, gap_center_distance, gap_half_length)
@@ -312,11 +395,11 @@ local function update_measurement_nodes(nodes, start_pos, end_pos, gap_center_di
   end
 
   local arrow_length = math.min(measurement_arrow_length, math.max(distance * 0.25, 0.35))
-  local start_dir_a = rotate_xz(line_direction, measurement_arrow_angle)
-  local start_dir_b = rotate_xz(line_direction, -measurement_arrow_angle)
-  local end_base_dir = hg.Vec3(-line_direction.x, -line_direction.y, -line_direction.z)
-  local end_dir_a = rotate_xz(end_base_dir, measurement_arrow_angle)
-  local end_dir_b = rotate_xz(end_base_dir, -measurement_arrow_angle)
+  local start_base_dir = hg.Vec3(-line_direction.x, -line_direction.y, -line_direction.z)
+  local start_dir_a = rotate_xz(start_base_dir, measurement_arrow_angle)
+  local start_dir_b = rotate_xz(start_base_dir, -measurement_arrow_angle)
+  local end_dir_a = rotate_xz(line_direction, measurement_arrow_angle)
+  local end_dir_b = rotate_xz(line_direction, -measurement_arrow_angle)
 
   set_line_transform(
     nodes.start_a:GetTransform(),
@@ -374,9 +457,14 @@ local grid_material = create_material(shader_ref, 92, 98, 108)
 local x_axis_material = create_material(shader_ref, 176, 72, 72)
 local z_axis_material = create_material(shader_ref, 72, 120, 176)
 local measurement_material = create_material(shader_ref, 232, 232, 240)
+local backdrop_material = create_emissive_material(
+  shader_ref,
+  background_clear_r,
+  background_clear_g,
+  background_clear_b)
 
 local scene = hg.Scene()
-scene.canvas.color = hg.ColorI(24, 28, 34)
+scene.canvas.color = hg.ColorI(background_clear_r, background_clear_g, background_clear_b)
 scene.environment.ambient = hg.Color(0.3, 0.3, 0.32, 1.0)
 
 local grid_x_nodes, grid_z_nodes = create_grid_nodes(
@@ -385,7 +473,7 @@ local grid_x_nodes, grid_z_nodes = create_grid_nodes(
   grid_material,
   x_axis_material,
   z_axis_material)
-local measurement_nodes = create_measurement_nodes(scene, line_ref, measurement_material)
+local measurement_nodes = create_measurement_nodes(scene, line_ref, measurement_material, backdrop_material)
 
 local camera_position = hg.Vec3(18, 16, -18)
 local camera = hg.CreateCamera(
@@ -476,10 +564,20 @@ while hg.IsWindowOpen(window) do
   local measurement_end_world = hg.Vec3(scene_origin.x, measurement_height, scene_origin.z)
   local measurement_distance = hg.Len(measurement_end_world - measurement_start_world)
   local label_text = string.format("%.0fm", measurement_distance)
+  local label_rect = hg.ComputeTextRect(font, label_text)
+  local label_width_world = (label_rect.ex - label_rect.sx) * measurement_label_scale
+  local label_height_world = math.abs(label_rect.ey - label_rect.sy) * measurement_label_scale
+  local backdrop_width_world = label_width_world + measurement_backdrop_padding_x * 2
+  local backdrop_depth_world = label_height_world + measurement_backdrop_padding_z * 2
+  local label_gap_half_length = math.min(
+    measurement_distance * 0.45,
+    backdrop_width_world * 0.5 + measurement_label_gap_padding)
   local label_visible = false
-  local label_anchor_world = (measurement_start_world + measurement_end_world) * 0.5
+  local label_anchor_distance = measurement_distance * 0.5
+  local visible_start_distance = 0.0
+  local visible_end_distance = 0.0
   if inverse_projection_ok then
-    label_visible, label_anchor_world = compute_visible_measurement_anchor(
+    label_visible, visible_start_distance, visible_end_distance = compute_visible_measurement_segment(
       projection_matrix,
       inverse_projection_matrix,
       view_matrix,
@@ -488,22 +586,36 @@ while hg.IsWindowOpen(window) do
       measurement_start_world,
       measurement_end_world)
   end
-  local label_rect = hg.ComputeTextRect(font, label_text)
-  local label_width_world = (label_rect.ex - label_rect.sx) * measurement_label_scale
-  local label_gap_half_length = math.min(
-    measurement_distance * 0.45,
-    label_width_world * 0.5 + measurement_label_gap_padding)
-  local label_matrix, label_anchor_distance = compute_measurement_label_transform(
-    measurement_start_world,
-    measurement_end_world,
-    label_anchor_world,
-    label_gap_half_length)
+  if label_visible then
+    local visible_segment_length = visible_end_distance - visible_start_distance
+    local required_visible_length = backdrop_width_world + measurement_label_gap_padding * 2
+    label_visible = visible_segment_length >= required_visible_length
+    label_anchor_distance = (visible_start_distance + visible_end_distance) * 0.5
+  end
   update_measurement_nodes(
     measurement_nodes,
     measurement_start_world,
     measurement_end_world,
     label_visible and label_anchor_distance or nil,
     label_visible and label_gap_half_length or 0.0)
+  local label_matrix
+  if label_visible then
+    local label_anchor_world
+    local label_line_yaw
+    label_matrix, label_anchor_world, label_line_yaw = compute_measurement_label_transform(
+      measurement_start_world,
+      measurement_end_world,
+      label_anchor_distance)
+    update_measurement_backdrop_node(
+      measurement_nodes.backdrop,
+      label_anchor_world,
+      label_line_yaw,
+      backdrop_width_world,
+      backdrop_depth_world,
+      true)
+  else
+    update_measurement_backdrop_node(measurement_nodes.backdrop, nil, 0.0, 0.0, 0.0, false)
+  end
 
   scene:Update(dt_clock)
   hg.SubmitSceneToPipeline(0, scene, hg.IntRect(0, 0, window_width, window_height), true, pipeline, resources)
