@@ -81,6 +81,24 @@ This should be treated as a design bias, not as dogma. The point is to keep the 
 
 ---
 
+## 3.1 Lua Editor Implementation Preferences
+
+For the Lua editor layer, the preferred style is intentionally simple.
+
+- prefer procedural Lua over OOP-style Lua as long as the code stays reasonably clean;
+- prefer small flat functions and explicit state tables over class-like indirection;
+- keep defensive code limited and proportional to real failure modes;
+- do not add large guard rails or abstraction layers unless they solve a concrete editor problem.
+
+The goal is the same as on the native side:
+
+- readable code;
+- explicit data flow;
+- low ceremony;
+- easy iteration while the tool is still evolving quickly.
+
+---
+
 ## 4. Recommended Native Component Split
 
 The native side should be split into three layers only.

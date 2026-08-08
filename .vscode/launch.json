@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run HARFANG App",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}\\app\\bin\\hg_lua-win-x64\\lua.exe",
+      "args": [
+        "main.lua"
+      ],
+      "cwd": "${workspaceFolder}\\app",
+      "console": "integratedTerminal",
+      "stopAtEntry": false,
+      "preLaunchTask": "Build app assets"
+    }
+  ]
+}

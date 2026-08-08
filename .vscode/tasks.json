@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build app assets",
+      "type": "shell",
+      "command": "${workspaceFolder}\\build_app_assets.bat",
+      "args": [
+        "-quiet"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
