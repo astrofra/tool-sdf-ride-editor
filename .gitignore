@@ -1,3 +1,5 @@
 /build/
 /artifacts/generated/
 
+*.DS_Store
+*.pyc
