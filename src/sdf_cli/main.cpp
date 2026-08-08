@@ -872,6 +872,9 @@ int main(int argc, char **argv)
     std::cout << "Surface pack dilated texels: " << surface_pack_result.dilated_texels << '\n';
     std::cout << "Surface pack covered texels: " << surface_pack_result.covered_texels << '\n';
     std::cout << "Surface pack thickness max distance: " << surface_pack_settings.thickness_max_distance << '\n';
+    std::cout << "Surface pack thickness cone angle: " << surface_pack_settings.thickness_cone_angle_degrees << '\n';
+    std::cout << "Surface pack thickness filter passes: " << surface_pack_result.thickness_filter_passes << '\n';
+    std::cout << "Surface pack thickness filter radius: " << surface_pack_result.thickness_filter_radius << '\n';
     std::cout << "Surface pack dilation passes: " << surface_pack_result.dilation_passes << '\n';
   }
 

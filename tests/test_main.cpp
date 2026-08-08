@@ -862,6 +862,23 @@ void test_surface_pack_bake_writes_png()
   expect_true(surface_result.baked_texels > 0, "surface pack should cover at least one texel");
   expect_true(surface_result.covered_texels >= surface_result.baked_texels, "surface pack dilation should never reduce texel coverage");
   expect_true(surface_result.dilation_passes >= 16, "surface pack auto dilation should use a non-trivial pass count");
+  expect_true(surface_result.thickness_filter_passes > 0, "surface pack should report thickness filtering");
+  expect_true(surface_result.thickness_filter_radius > 0, "surface pack should report a non-zero thickness filter radius");
+
+  sdf::Rgb8Image image_repeat;
+  sdf::SurfacePackResult repeat_result;
+  const bool bake_repeat_ok = sdf::bake_surface_pack_texture(
+    scene_file.scene,
+    unwrapped_mesh,
+    ao_image,
+    surface_settings,
+    &image_repeat,
+    &repeat_result,
+    &error_message);
+  expect_true(bake_repeat_ok, "surface pack stochastic bake should stay reproducible");
+  expect_true(image_repeat.width == image.width, "repeat bake width should match");
+  expect_true(image_repeat.height == image.height, "repeat bake height should match");
+  expect_true(image_repeat.pixels == image.pixels, "surface pack stochastic bake should be deterministic for a fixed seed");
 
   unsigned char max_red = 0;
   unsigned char max_green = 0;

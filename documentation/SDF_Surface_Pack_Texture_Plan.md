@@ -4,6 +4,8 @@
 
 Documented and first implementation milestone delivered on **August 7, 2026**.
 
+The current stochastic-thickness revision was updated on **August 8, 2026**.
+
 This note records the decision to add a compact packed texture alongside the tangent-space normal map.
 
 ---
@@ -68,7 +70,17 @@ This is intentionally an artist-friendly scalar mask, not a physically strict pr
 
 ### Thickness
 
-Thickness is currently estimated by marching from the surface inward along the opposite of the SDF normal until the ray exits the solid or hits a configurable maximum distance.
+Thickness is currently estimated with a **single stochastic inward ray per texel**.
+
+In practice:
+
+- the UV texel is projected back to the SDF surface;
+- one inward direction is sampled in a cone around `-normal`;
+- the direction is deterministic for a given texel and seed, so the bake remains reproducible;
+- the ray marches through the solid until it exits or reaches the configured maximum distance;
+- the resulting noisy field is filtered in UV space per chart to recover a stable large-mass signal.
+
+The current direction pattern is a stable low-clumping pseudo-random distribution, meant as a practical blue-noise-like compromise rather than strict white noise.
 
 Default maximum distance:
 
@@ -97,6 +109,6 @@ Those can be added later if the current pack proves useful in production.
 Items already worth tracking for later:
 
 - expose curvature tuning in the CLI only if real production usage requires it;
-- evaluate whether thickness should optionally use a denoised or smoothed variant;
+- evaluate whether the thickness filter should become user-configurable in the CLI;
 - study additional packing presets if future materials need different signal groupings;
 - keep the pack aligned with shared-texture LOD work instead of duplicating texture sets.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include "sdf/image_write.h"
@@ -17,10 +18,14 @@ struct SurfacePackSettings
   int height = 0;
   int dilation_passes = -1;
   int projection_iterations = 4;
+  int thickness_filter_passes = 2;
+  int thickness_filter_radius = 3;
   float surface_epsilon = 0.0f;
   float curvature_sample_radius = 0.0f;
   float thickness_max_distance = 5.0f;
+  float thickness_cone_angle_degrees = 30.0f;
   bool flip_v = true;
+  std::uint32_t seed = 1337;
 };
 
 struct SurfacePackResult
@@ -28,6 +33,8 @@ struct SurfacePackResult
   std::size_t baked_texels = 0;
   std::size_t dilated_texels = 0;
   std::size_t covered_texels = 0;
+  int thickness_filter_passes = 0;
+  int thickness_filter_radius = 0;
   int dilation_passes = 0;
 };
 

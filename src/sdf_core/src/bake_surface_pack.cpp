@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include "progress_utils.h"
@@ -79,6 +80,43 @@ int compute_auto_dilation_pass_count(int width, int height)
 {
   const int max_dimension = std::max(width, height);
   return std::clamp(max_dimension / 32, 16, 64);
+}
+
+float compute_spatial_weight(int dx, int dy, int radius)
+{
+  const float sigma = std::max(0.75f, static_cast<float>(radius) * 0.75f);
+  const float distance_squared = static_cast<float>(dx * dx + dy * dy);
+  const float sigma_squared = sigma * sigma;
+  return std::exp(-distance_squared / (2.0f * sigma_squared));
+}
+
+float compute_normal_weight(const Vec3 &lhs, const Vec3 &rhs)
+{
+  constexpr float kNormalSigma = 0.15f;
+  const float alignment = clampf(dot(lhs, rhs), 0.0f, 1.0f);
+  return std::exp(-(1.0f - alignment) / kNormalSigma);
+}
+
+std::uint32_t hash_u32(std::uint32_t value)
+{
+  value ^= value >> 16;
+  value *= 0x7feb352dU;
+  value ^= value >> 15;
+  value *= 0x846ca68bU;
+  value ^= value >> 16;
+  return value;
+}
+
+float fractf(float value)
+{
+  return value - std::floor(value);
+}
+
+// This is not true blue noise, but it gives a stable low-clumping pattern
+// that is much better behaved than plain hash-based white noise in UV space.
+float interleaved_gradient_noise(float x, float y)
+{
+  return fractf(52.9829189f * fractf(0.06711056f * x + 0.00583715f * y));
 }
 
 unsigned char to_byte(float value)
@@ -229,8 +267,12 @@ float estimate_thickness_signal(
   const Vec3 &surface_normal,
   const Vec3 &tangent,
   const Vec3 &bitangent,
+  int texel_x,
+  int texel_y,
+  std::uint32_t seed,
   float surface_epsilon,
-  float max_distance)
+  float max_distance,
+  float cone_angle_degrees)
 {
   if (max_distance <= 0.0f)
   {
@@ -324,27 +366,24 @@ float estimate_thickness_signal(
     };
 
   constexpr float kPi = 3.14159265358979323846f;
-  constexpr float kThicknessConeAngleDegrees = 25.0f;
-  const float cone_offset = std::tan(kThicknessConeAngleDegrees * kPi / 180.0f);
   const Vec3 inward = -surface_normal;
-  const std::array<Vec3, 5> sample_directions = {{
-    inward,
-    normalized(inward + tangent * cone_offset),
-    normalized(inward - tangent * cone_offset),
-    normalized(inward + bitangent * cone_offset),
-    normalized(inward - bitangent * cone_offset)
-  }};
-  const std::array<float, 5> sample_weights = {{2.0f, 1.0f, 1.0f, 1.0f, 1.0f}};
+  const float clamped_cone_angle_degrees = clampf(cone_angle_degrees, 0.0f, 89.0f);
+  const float cos_max_theta = std::cos(clamped_cone_angle_degrees * kPi / 180.0f);
+  const float seed_offset_x = static_cast<float>(hash_u32(seed ^ 0x68bc21ebu) & 1023u) / 1024.0f;
+  const float seed_offset_y = static_cast<float>(hash_u32(seed ^ 0x02e5be93u) & 1023u) / 1024.0f;
+  const float x = static_cast<float>(texel_x);
+  const float y = static_cast<float>(texel_y);
+  const float u1 = interleaved_gradient_noise(x + 0.5f + seed_offset_x, y + 0.5f + seed_offset_y);
+  const float u2 = interleaved_gradient_noise(x + 17.5f + seed_offset_y, y + 47.5f + seed_offset_x);
+  const float cos_theta = 1.0f - u1 * (1.0f - cos_max_theta);
+  const float sin_theta = std::sqrt(std::max(0.0f, 1.0f - cos_theta * cos_theta));
+  const float phi = 2.0f * kPi * u2;
+  const Vec3 direction = normalized(
+    inward * cos_theta +
+    tangent * (std::cos(phi) * sin_theta) +
+    bitangent * (std::sin(phi) * sin_theta));
 
-  float weighted_sum = 0.0f;
-  float weight_sum = 0.0f;
-  for (std::size_t sample_index = 0; sample_index < sample_directions.size(); ++sample_index)
-  {
-    weighted_sum += trace_thickness_along_direction(sample_directions[sample_index]) * sample_weights[sample_index];
-    weight_sum += sample_weights[sample_index];
-  }
-
-  return weight_sum > 0.0f ? clampf(weighted_sum / weight_sum, 0.0f, 1.0f) : 0.0f;
+  return trace_thickness_along_direction(direction);
 }
 
 }  // namespace
@@ -393,8 +432,10 @@ bool bake_surface_pack_texture(
 
   std::vector<float> curvature_values(texel_count, 0.0f);
   std::vector<float> thickness_values(texel_count, 0.0f);
+  std::vector<Vec3> surface_normals(texel_count);
   std::vector<CoveredSurfaceTexel> covered_texels(texel_count);
   std::vector<std::uint8_t> valid(texel_count, 0u);
+  std::vector<int> chart_ids(texel_count, -1);
   std::vector<int> source_texels(texel_count, -1);
   std::vector<TriangleTangentBasis> triangle_tangent_bases(uv_mesh.triangles.size());
 
@@ -543,14 +584,20 @@ bool bake_surface_pack_texture(
         surface_epsilon,
         curvature_sample_radius,
         settings.projection_iterations);
+      surface_normals[texel_index] = surface_normal;
+      chart_ids[texel_index] = triangle.uv_chart_id;
       thickness_values[texel_index] = estimate_thickness_signal(
         scene,
         surface_position,
         surface_normal,
         tangent,
         bitangent,
+        x,
+        y,
+        settings.seed,
         surface_epsilon,
-        settings.thickness_max_distance);
+        settings.thickness_max_distance,
+        settings.thickness_cone_angle_degrees);
     }
 
     const int done = shaded_rows.fetch_add(1) + 1;
@@ -558,6 +605,79 @@ bool bake_surface_pack_texture(
   }
 
   shade_progress.finish();
+
+  const int thickness_filter_pass_count = std::max(settings.thickness_filter_passes, 0);
+  const int thickness_filter_radius = std::max(settings.thickness_filter_radius, 0);
+  if (thickness_filter_pass_count > 0 && thickness_filter_radius > 0)
+  {
+    detail::ProgressScope thickness_filter_progress(
+      progress_callback,
+      "Filter thickness",
+      static_cast<std::uint64_t>(thickness_filter_pass_count) * static_cast<std::uint64_t>(settings.height));
+
+    for (int pass = 0; pass < thickness_filter_pass_count; ++pass)
+    {
+      std::vector<float> next_thickness = thickness_values;
+      std::atomic<int> filter_rows_completed = 0;
+      const std::uint64_t pass_base = static_cast<std::uint64_t>(pass) * static_cast<std::uint64_t>(settings.height);
+
+#ifdef _OPENMP
+#pragma omp parallel for schedule(static)
+#endif
+      for (int y = 0; y < settings.height; ++y)
+      {
+        for (int x = 0; x < settings.width; ++x)
+        {
+          const std::size_t texel_index = static_cast<std::size_t>(x + y * settings.width);
+          if (valid[texel_index] == 0)
+          {
+            continue;
+          }
+
+          const int center_chart_id = chart_ids[texel_index];
+          const Vec3 &center_normal = surface_normals[texel_index];
+          float weighted_sum = 0.0f;
+          float weight_sum = 0.0f;
+
+          const int min_y = std::max(0, y - thickness_filter_radius);
+          const int max_y = std::min(settings.height - 1, y + thickness_filter_radius);
+          const int min_x = std::max(0, x - thickness_filter_radius);
+          const int max_x = std::min(settings.width - 1, x + thickness_filter_radius);
+          for (int sample_y = min_y; sample_y <= max_y; ++sample_y)
+          {
+            for (int sample_x = min_x; sample_x <= max_x; ++sample_x)
+            {
+              const std::size_t sample_index = static_cast<std::size_t>(sample_x + sample_y * settings.width);
+              if (valid[sample_index] == 0 || chart_ids[sample_index] != center_chart_id)
+              {
+                continue;
+              }
+
+              const int dx = sample_x - x;
+              const int dy = sample_y - y;
+              const float spatial_weight = compute_spatial_weight(dx, dy, thickness_filter_radius);
+              const float normal_weight = compute_normal_weight(center_normal, surface_normals[sample_index]);
+              const float weight = spatial_weight * normal_weight;
+              weighted_sum += thickness_values[sample_index] * weight;
+              weight_sum += weight;
+            }
+          }
+
+          if (weight_sum > 1.0e-6f)
+          {
+            next_thickness[texel_index] = weighted_sum / weight_sum;
+          }
+        }
+
+        const int done = filter_rows_completed.fetch_add(1) + 1;
+        thickness_filter_progress.update(pass_base + static_cast<std::uint64_t>(done));
+      }
+
+      thickness_values.swap(next_thickness);
+    }
+
+    thickness_filter_progress.finish();
+  }
 
   const int dilation_pass_count =
     settings.dilation_passes >= 0
@@ -661,6 +781,8 @@ bool bake_surface_pack_texture(
     result->baked_texels = baked_texels;
     result->covered_texels = covered_texel_count;
     result->dilated_texels = covered_texel_count >= baked_texels ? (covered_texel_count - baked_texels) : 0;
+    result->thickness_filter_passes = thickness_filter_pass_count;
+    result->thickness_filter_radius = thickness_filter_pass_count > 0 ? thickness_filter_radius : 0;
     result->dilation_passes = dilation_pass_count;
   }
 
