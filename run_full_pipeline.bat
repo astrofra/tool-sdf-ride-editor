@@ -27,7 +27,7 @@ if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
   --bake-ao-denoise-radius 2 ^
   --bake-normal "%~dp0artifacts\generated\frame_006_blockout_adaptive_normal.png" ^
   --bake-surface-pack "%~dp0artifacts\generated\frame_006_blockout_adaptive_surface_pack.png" ^
-  --surface-thickness-max-distance 5.0
+  --surface-thickness-max-distance 25.0
 if errorlevel 1 goto :fail
 
 goto :done
