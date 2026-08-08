@@ -13,7 +13,7 @@ local grid_height = 0.0
 local measurement_height = 0.06
 local measurement_arrow_length = 1.25
 local measurement_arrow_angle = math.rad(28)
-local measurement_label_lift = 0.02
+local measurement_label_lift = 0.001
 local measurement_label_scale = 0.02
 local measurement_label_gap_padding = 0.25
 local camera_drive = 0.0
@@ -203,7 +203,7 @@ local function compute_visible_measurement_anchor(
   return true, intersect_horizontal_plane(ray_origin, ray_direction, measurement_height, (start_pos + end_pos) * 0.5)
 end
 
-local function compute_measurement_label_transform(start_pos, end_pos, anchor_pos)
+local function compute_measurement_label_transform(start_pos, end_pos, anchor_pos, gap_half_length)
   local delta = end_pos - start_pos
   local distance = hg.Len(delta)
   local line_direction = distance > 0.0001 and delta / distance or hg.Vec3(1, 0, 0)
@@ -213,17 +213,18 @@ local function compute_measurement_label_transform(start_pos, end_pos, anchor_po
     (mid.x - start_pos.x) * line_direction.x +
     (mid.y - start_pos.y) * line_direction.y +
     (mid.z - start_pos.z) * line_direction.z
-  anchor_distance = math.max(0.0, math.min(anchor_distance, distance))
+  anchor_distance = math.max(gap_half_length, math.min(anchor_distance, distance - gap_half_length))
+  local label_anchor = start_pos + line_direction * anchor_distance
   local label_position = hg.Vec3(
-    mid.x,
+    label_anchor.x,
     measurement_height + measurement_label_lift,
-    mid.z)
+    label_anchor.z)
   local label_matrix = hg.TransformationMat4(
-    hg.Vec3(0, 0, 0),
+    label_position,
     hg.Vec3(hg.Deg(-90), hg.Deg(180) - line_yaw, 0),
     hg.Vec3(measurement_label_scale, measurement_label_scale, measurement_label_scale))
 
-  return label_position, label_matrix, anchor_distance
+  return label_matrix, anchor_distance
 end
 
 local function create_grid_nodes(scene, line_ref, grid_material, x_axis_material, z_axis_material)
@@ -476,15 +477,16 @@ while hg.IsWindowOpen(window) do
       measurement_start_world,
       measurement_end_world)
   end
-  local label_position, label_matrix, label_anchor_distance = compute_measurement_label_transform(
-    measurement_start_world,
-    measurement_end_world,
-    label_anchor_world)
   local label_rect = hg.ComputeTextRect(font, label_text)
   local label_width_world = (label_rect.ex - label_rect.sx) * measurement_label_scale
   local label_gap_half_length = math.min(
     measurement_distance * 0.45,
     label_width_world * 0.5 + measurement_label_gap_padding)
+  local label_matrix, label_anchor_distance = compute_measurement_label_transform(
+    measurement_start_world,
+    measurement_end_world,
+    label_anchor_world,
+    label_gap_half_length)
   update_measurement_nodes(
     measurement_nodes,
     measurement_start_world,
@@ -506,7 +508,7 @@ while hg.IsWindowOpen(window) do
       "u_tex",
       0,
       label_matrix,
-      label_position,
+      hg.Vec3(0, 0, 0),
       hg.DTHA_Center,
       hg.DTVA_Center,
       text_uniform_values,
