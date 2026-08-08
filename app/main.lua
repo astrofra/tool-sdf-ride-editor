@@ -6,6 +6,7 @@ local window_title = "SDF Ride Editor"
 local label_view_id = 254
 local imgui_view_id = 255
 
+local default_shader_gamma = 2.2
 local background_clear_r = 24
 local background_clear_g = 28
 local background_clear_b = 34
@@ -92,19 +93,32 @@ local function snap_grid_center(position)
     snap_to_step(position.z, grid_snap_step))
 end
 
+local function shader_color_channel_from_byte(value)
+  return math.max(0.0, math.min(value / 255.0, 1.0)) ^ default_shader_gamma
+end
+
+local function make_default_shader_color(r, g, b)
+  return hg.Vec4(
+    shader_color_channel_from_byte(r),
+    shader_color_channel_from_byte(g),
+    shader_color_channel_from_byte(b),
+    1.0)
+end
+
 local function create_material(shader_ref, r, g, b)
+  local shader_color = make_default_shader_color(r, g, b)
   return hg.CreateMaterial(
     shader_ref,
-    "uDiffuseColor", hg.Vec4I(r, g, b),
-    "uSpecularColor", hg.Vec4I(r, g, b))
+    "uDiffuseColor", shader_color,
+    "uSpecularColor", shader_color)
 end
 
 local function create_emissive_material(shader_ref, r, g, b)
   local material = hg.CreateMaterial(
     shader_ref,
-    "uDiffuseColor", hg.Vec4I(0, 0, 0),
-    "uSpecularColor", hg.Vec4I(0, 0, 0))
-  hg.SetMaterialValue(material, "uSelfColor", hg.Vec4(r / 255, g / 255, b / 255, 1.0))
+    "uDiffuseColor", hg.Vec4(0.0, 0.0, 0.0, 1.0),
+    "uSpecularColor", hg.Vec4(0.0, 0.0, 0.0, 1.0))
+  hg.SetMaterialValue(material, "uSelfColor", make_default_shader_color(r, g, b))
   return material
 end
 
