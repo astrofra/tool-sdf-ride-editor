@@ -227,6 +227,8 @@ float estimate_thickness_signal(
   const SceneDocument &scene,
   const Vec3 &surface_position,
   const Vec3 &surface_normal,
+  const Vec3 &tangent,
+  const Vec3 &bitangent,
   float surface_epsilon,
   float max_distance)
 {
@@ -235,82 +237,114 @@ float estimate_thickness_signal(
     return 0.0f;
   }
 
-  const Vec3 inward_direction = -surface_normal;
-  float inside_offset = std::max(surface_epsilon * 2.0f, 1.0e-3f);
-  Vec3 point = surface_position + inward_direction * inside_offset;
-  float signed_distance = evaluate_scene_sdf(scene, point);
-  bool found_inside = signed_distance <= 0.0f;
-
-  for (int attempt = 0; !found_inside && attempt < 5; ++attempt)
-  {
-    inside_offset *= 2.0f;
-    if (inside_offset >= max_distance)
+  const auto trace_thickness_along_direction =
+    [&](const Vec3 &direction)
     {
-      break;
-    }
-
-    point = surface_position + inward_direction * inside_offset;
-    signed_distance = evaluate_scene_sdf(scene, point);
-    found_inside = signed_distance <= 0.0f;
-  }
-
-  if (!found_inside)
-  {
-    return 0.0f;
-  }
-
-  const float min_step = std::max(surface_epsilon, max_distance / 512.0f);
-  float travel = inside_offset;
-  float previous_travel = travel;
-
-  for (int iteration = 0; iteration < 256 && travel < max_distance; ++iteration)
-  {
-    if (signed_distance > 0.0f)
-    {
-      break;
-    }
-
-    previous_travel = travel;
-    const float remaining = max_distance - travel;
-    if (remaining <= 0.0f)
-    {
-      break;
-    }
-
-    const float step = std::min(std::max(-signed_distance, min_step), remaining);
-    if (step <= 1.0e-6f)
-    {
-      break;
-    }
-
-    travel += step;
-    point = surface_position + inward_direction * travel;
-    signed_distance = evaluate_scene_sdf(scene, point);
-    if (signed_distance <= 0.0f)
-    {
-      continue;
-    }
-
-    float low = previous_travel;
-    float high = travel;
-    for (int refine = 0; refine < 8; ++refine)
-    {
-      const float mid = 0.5f * (low + high);
-      const float mid_distance = evaluate_scene_sdf(scene, surface_position + inward_direction * mid);
-      if (mid_distance <= 0.0f)
+      if (length_squared(direction) <= 1.0e-10f)
       {
-        low = mid;
+        return 0.0f;
       }
-      else
-      {
-        high = mid;
-      }
-    }
 
-    return clampf(high / max_distance, 0.0f, 1.0f);
+      const Vec3 inward_direction = normalized(direction);
+      float inside_offset = std::max(surface_epsilon * 2.0f, 1.0e-3f);
+      Vec3 point = surface_position + inward_direction * inside_offset;
+      float signed_distance = evaluate_scene_sdf(scene, point);
+      bool found_inside = signed_distance <= 0.0f;
+
+      for (int attempt = 0; !found_inside && attempt < 5; ++attempt)
+      {
+        inside_offset *= 2.0f;
+        if (inside_offset >= max_distance)
+        {
+          break;
+        }
+
+        point = surface_position + inward_direction * inside_offset;
+        signed_distance = evaluate_scene_sdf(scene, point);
+        found_inside = signed_distance <= 0.0f;
+      }
+
+      if (!found_inside)
+      {
+        return 0.0f;
+      }
+
+      const float min_step = std::max(surface_epsilon, max_distance / 512.0f);
+      float travel = inside_offset;
+      float previous_travel = travel;
+
+      for (int iteration = 0; iteration < 256 && travel < max_distance; ++iteration)
+      {
+        if (signed_distance > 0.0f)
+        {
+          break;
+        }
+
+        previous_travel = travel;
+        const float remaining = max_distance - travel;
+        if (remaining <= 0.0f)
+        {
+          break;
+        }
+
+        const float step = std::min(std::max(-signed_distance, min_step), remaining);
+        if (step <= 1.0e-6f)
+        {
+          break;
+        }
+
+        travel += step;
+        point = surface_position + inward_direction * travel;
+        signed_distance = evaluate_scene_sdf(scene, point);
+        if (signed_distance <= 0.0f)
+        {
+          continue;
+        }
+
+        float low = previous_travel;
+        float high = travel;
+        for (int refine = 0; refine < 8; ++refine)
+        {
+          const float mid = 0.5f * (low + high);
+          const float mid_distance = evaluate_scene_sdf(scene, surface_position + inward_direction * mid);
+          if (mid_distance <= 0.0f)
+          {
+            low = mid;
+          }
+          else
+          {
+            high = mid;
+          }
+        }
+
+        return clampf(high / max_distance, 0.0f, 1.0f);
+      }
+
+      return 1.0f;
+    };
+
+  constexpr float kPi = 3.14159265358979323846f;
+  constexpr float kThicknessConeAngleDegrees = 25.0f;
+  const float cone_offset = std::tan(kThicknessConeAngleDegrees * kPi / 180.0f);
+  const Vec3 inward = -surface_normal;
+  const std::array<Vec3, 5> sample_directions = {{
+    inward,
+    normalized(inward + tangent * cone_offset),
+    normalized(inward - tangent * cone_offset),
+    normalized(inward + bitangent * cone_offset),
+    normalized(inward - bitangent * cone_offset)
+  }};
+  const std::array<float, 5> sample_weights = {{2.0f, 1.0f, 1.0f, 1.0f, 1.0f}};
+
+  float weighted_sum = 0.0f;
+  float weight_sum = 0.0f;
+  for (std::size_t sample_index = 0; sample_index < sample_directions.size(); ++sample_index)
+  {
+    weighted_sum += trace_thickness_along_direction(sample_directions[sample_index]) * sample_weights[sample_index];
+    weight_sum += sample_weights[sample_index];
   }
 
-  return 1.0f;
+  return weight_sum > 0.0f ? clampf(weighted_sum / weight_sum, 0.0f, 1.0f) : 0.0f;
 }
 
 }  // namespace
@@ -513,6 +547,8 @@ bool bake_surface_pack_texture(
         scene,
         surface_position,
         surface_normal,
+        tangent,
+        bitangent,
         surface_epsilon,
         settings.thickness_max_distance);
     }
