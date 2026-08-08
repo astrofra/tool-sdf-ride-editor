@@ -1,5 +1,6 @@
 /build/
 /artifacts/generated/
+/app/assets_compiled/
 
 *.DS_Store
 *.pyc
