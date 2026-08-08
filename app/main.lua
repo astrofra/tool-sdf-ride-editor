@@ -8,6 +8,7 @@ local imgui_view_id = 255
 
 local grid_half_extent = 25
 local grid_spacing = 1
+local grid_snap_step = grid_spacing * 2
 local grid_line_thickness = 0.025
 local grid_height = 0.0
 local measurement_height = 0.06
@@ -27,6 +28,10 @@ local scene_origin = hg.Vec3(0, 0, 0)
 local function smooth_towards(current, target, speed, dt)
   local blend = math.min(speed * dt, 1.0)
   return current + (target - current) * blend
+end
+
+local function snap_to_step(value, step)
+  return math.floor(value / step) * step
 end
 
 local function is_finite_number(value)
@@ -71,6 +76,13 @@ local function intersect_horizontal_plane(origin, direction, plane_y, fallback)
   end
 
   return point
+end
+
+local function snap_grid_center(position)
+  return hg.Vec3(
+    snap_to_step(position.x, grid_snap_step),
+    0,
+    snap_to_step(position.z, grid_snap_step))
 end
 
 local function create_material(shader_ref, r, g, b)
@@ -458,8 +470,7 @@ while hg.IsWindowOpen(window) do
   local inverse_projection_matrix
   local inverse_projection_ok
   inverse_projection_matrix, inverse_projection_ok = hg.Inverse(projection_matrix)
-  grid_center = intersect_ground_plane(hg.GetT(camera_world), camera_forward, grid_center)
-  grid_center.y = 0
+  grid_center = snap_grid_center(intersect_ground_plane(hg.GetT(camera_world), camera_forward, grid_center))
   update_grid_nodes(grid_x_nodes, grid_z_nodes, grid_center)
   local measurement_start_world = hg.Vec3(grid_center.x, measurement_height, grid_center.z)
   local measurement_end_world = hg.Vec3(scene_origin.x, measurement_height, scene_origin.z)
