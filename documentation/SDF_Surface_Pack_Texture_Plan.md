@@ -82,6 +82,22 @@ In practice:
 
 The current direction pattern is a stable low-clumping pseudo-random distribution, meant as a practical blue-noise-like compromise rather than strict white noise.
 
+#### Decision Record
+
+On **August 8, 2026**, the project explicitly moved away from the earlier deterministic multi-ray cone evaluation for thickness.
+
+The deterministic cone was more regular, but in practice it tended to produce values that felt too flat and too conservative for this kind of large-mass scalar signal.
+
+The chosen replacement is:
+
+- one stochastic inward ray per texel;
+- deterministic per-texel seeding for reproducibility;
+- UV-space chart-aware filtering after the trace pass.
+
+This was kept because it gave more interesting large-volume variation while also reducing the raw tracing cost compared with firing several rays per texel.
+
+For this project, the thickness channel is treated as an approximate artistic mass indicator rather than a high-precision physical measurement.
+
 Default maximum distance:
 
 - `5.0` world units.
