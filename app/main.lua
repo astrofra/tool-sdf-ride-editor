@@ -13,9 +13,9 @@ local grid_height = 0.0
 local measurement_height = 0.06
 local measurement_arrow_length = 1.25
 local measurement_arrow_angle = math.rad(28)
-local measurement_label_offset = 0.65
 local measurement_label_lift = 0.02
 local measurement_label_scale = 0.02
+local measurement_label_gap_padding = 0.25
 local camera_drive = 0.0
 local camera_z_velocity = 0.0
 local camera_translation_speed = 16.0
@@ -55,6 +55,24 @@ local function intersect_ground_plane(origin, direction, fallback)
   return point
 end
 
+local function intersect_horizontal_plane(origin, direction, plane_y, fallback)
+  if math.abs(direction.y) < 0.0001 then
+    return fallback
+  end
+
+  local distance_to_plane = (plane_y - origin.y) / direction.y
+  if not is_finite_number(distance_to_plane) then
+    return fallback
+  end
+
+  local point = origin + direction * distance_to_plane
+  if not is_finite_vec3(point) then
+    return fallback
+  end
+
+  return point
+end
+
 local function create_material(shader_ref, r, g, b)
   return hg.CreateMaterial(
     shader_ref,
@@ -81,23 +99,131 @@ local function yaw_from_xz(direction)
   return math.atan(direction.z, direction.x)
 end
 
-local function compute_measurement_label_transform(start_pos, end_pos)
+local function clip_line_to_rect(x0, y0, x1, y1, min_x, min_y, max_x, max_y)
+  local dx = x1 - x0
+  local dy = y1 - y0
+  local t0 = 0.0
+  local t1 = 1.0
+
+  local function clip(p, q)
+    if math.abs(p) < 0.0001 then
+      return q >= 0.0
+    end
+
+    local ratio = q / p
+    if p < 0.0 then
+      if ratio > t1 then
+        return false
+      end
+      if ratio > t0 then
+        t0 = ratio
+      end
+      return true
+    end
+
+    if ratio < t0 then
+      return false
+    end
+    if ratio < t1 then
+      t1 = ratio
+    end
+    return true
+  end
+
+  if not clip(-dx, x0 - min_x) then
+    return false
+  end
+  if not clip(dx, max_x - x0) then
+    return false
+  end
+  if not clip(-dy, y0 - min_y) then
+    return false
+  end
+  if not clip(dy, max_y - y0) then
+    return false
+  end
+
+  return true, x0 + dx * t0, y0 + dy * t0, x0 + dx * t1, y0 + dy * t1
+end
+
+local function compute_visible_measurement_anchor(
+  projection_matrix,
+  inverse_projection_matrix,
+  view_matrix,
+  camera_world,
+  resolution,
+  start_pos,
+  end_pos)
+  local _, start_screen = hg.ProjectToScreenSpace(projection_matrix, view_matrix * start_pos, resolution)
+  local _, end_screen = hg.ProjectToScreenSpace(projection_matrix, view_matrix * end_pos, resolution)
+
+  if start_screen.z < 0.0 and end_screen.z < 0.0 then
+    return false, (start_pos + end_pos) * 0.5
+  end
+
+  local is_visible
+  local clip_x0
+  local clip_y0
+  local clip_x1
+  local clip_y1
+  is_visible, clip_x0, clip_y0, clip_x1, clip_y1 = clip_line_to_rect(
+    start_screen.x,
+    start_screen.y,
+    end_screen.x,
+    end_screen.y,
+    0.0,
+    0.0,
+    resolution.x,
+    resolution.y)
+
+  if not is_visible then
+    return false, (start_pos + end_pos) * 0.5
+  end
+
+  local screen_mid = hg.Vec3((clip_x0 + clip_x1) * 0.5, (clip_y0 + clip_y1) * 0.5, 0.0)
+  local near_ok
+  local near_view
+  near_ok, near_view = hg.UnprojectFromScreenSpace(inverse_projection_matrix, screen_mid, resolution)
+
+  local far_ok
+  local far_view
+  far_ok, far_view = hg.UnprojectFromScreenSpace(
+    inverse_projection_matrix,
+    hg.Vec3(screen_mid.x, screen_mid.y, 1.0),
+    resolution)
+
+  if not near_ok or not far_ok then
+    return false, (start_pos + end_pos) * 0.5
+  end
+
+  local ray_origin = camera_world * near_view
+  local ray_target = camera_world * far_view
+  local ray_direction = hg.Normalize(ray_target - ray_origin)
+
+  return true, intersect_horizontal_plane(ray_origin, ray_direction, measurement_height, (start_pos + end_pos) * 0.5)
+end
+
+local function compute_measurement_label_transform(start_pos, end_pos, anchor_pos)
   local delta = end_pos - start_pos
   local distance = hg.Len(delta)
   local line_direction = distance > 0.0001 and delta / distance or hg.Vec3(1, 0, 0)
   local line_yaw = yaw_from_xz(line_direction)
-  local line_normal = hg.Vec3(line_direction.z, 0, -line_direction.x)
-  local mid = (start_pos + end_pos) * 0.5
+  local mid = anchor_pos or (start_pos + end_pos) * 0.5
+  local anchor_distance =
+    (mid.x - start_pos.x) * line_direction.x +
+    (mid.y - start_pos.y) * line_direction.y +
+    (mid.z - start_pos.z) * line_direction.z
+  anchor_distance = math.max(0.0, math.min(anchor_distance, distance))
   local label_position = hg.Vec3(
-    mid.x + line_normal.x * measurement_label_offset,
+    mid.x,
     measurement_height + measurement_label_lift,
-    mid.z + line_normal.z * measurement_label_offset)
+    mid.z)
   local label_matrix = hg.TransformationMat4(
     hg.Vec3(0, 0, 0),
-    hg.Vec3(hg.Deg(-90), -line_yaw, 0),
+    hg.Vec3(hg.Deg(-90), hg.Deg(180) - line_yaw, 0),
     hg.Vec3(measurement_label_scale, measurement_label_scale, measurement_label_scale))
 
-  return label_position, label_matrix
+  return label_position, label_matrix, anchor_distance
 end
 
 local function create_grid_nodes(scene, line_ref, grid_material, x_axis_material, z_axis_material)
@@ -137,7 +263,8 @@ end
 
 local function create_measurement_nodes(scene, line_ref, measurement_material)
   return {
-    shaft = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
+    shaft_a = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
+    shaft_b = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
     start_a = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
     start_b = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
     end_a = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {measurement_material}),
@@ -145,19 +272,31 @@ local function create_measurement_nodes(scene, line_ref, measurement_material)
   }
 end
 
-local function update_measurement_nodes(nodes, start_pos, end_pos)
+local function update_measurement_nodes(nodes, start_pos, end_pos, gap_center_distance, gap_half_length)
   local delta = end_pos - start_pos
   local distance = hg.Len(delta)
   local line_direction = distance > 0.0001 and delta / distance or hg.Vec3(1, 0, 0)
   local line_yaw = yaw_from_xz(line_direction)
-  local mid = (start_pos + end_pos) * 0.5
+  local function update_shaft_segment(node, start_distance, segment_length)
+    local safe_length = math.max(segment_length, 0.001)
+    local segment_mid = start_pos + line_direction * (start_distance + segment_length * 0.5)
+    set_line_transform(
+      node:GetTransform(),
+      hg.Vec3(segment_mid.x, measurement_height, segment_mid.z),
+      line_yaw,
+      safe_length,
+      grid_line_thickness * 1.35)
+  end
 
-  set_line_transform(
-    nodes.shaft:GetTransform(),
-    hg.Vec3(mid.x, measurement_height, mid.z),
-    line_yaw,
-    math.max(distance, 0.001),
-    grid_line_thickness * 1.35)
+  if gap_center_distance ~= nil and gap_half_length > 0.0 then
+    local gap_start = math.max(0.0, math.min(gap_center_distance - gap_half_length, distance))
+    local gap_end = math.max(gap_start, math.min(gap_center_distance + gap_half_length, distance))
+    update_shaft_segment(nodes.shaft_a, 0.0, gap_start)
+    update_shaft_segment(nodes.shaft_b, gap_end, math.max(distance - gap_end, 0.0))
+  else
+    update_shaft_segment(nodes.shaft_a, 0.0, distance)
+    update_shaft_segment(nodes.shaft_b, distance, 0.0)
+  end
 
   local arrow_length = math.min(measurement_arrow_length, math.max(distance * 0.25, 0.35))
   local start_dir_a = rotate_xz(line_direction, measurement_arrow_angle)
@@ -308,14 +447,6 @@ while hg.IsWindowOpen(window) do
 
   local camera_world = camera_transform:GetWorld()
   local camera_forward = hg.Normalize(hg.GetZ(camera_world))
-  grid_center = intersect_ground_plane(hg.GetT(camera_world), camera_forward, grid_center)
-  grid_center.y = 0
-  update_grid_nodes(grid_x_nodes, grid_z_nodes, grid_center)
-  local measurement_distance = update_measurement_nodes(
-    measurement_nodes,
-    grid_center,
-    scene_origin)
-
   local camera_component = camera:GetCamera()
   local view_matrix = hg.InverseFast(camera_world)
   local projection_matrix = hg.ComputePerspectiveProjectionMatrix(
@@ -323,32 +454,65 @@ while hg.IsWindowOpen(window) do
     camera_component:GetZFar(),
     hg.FovToZoomFactor(camera_component:GetFov()),
     hg.ComputeAspectRatioX(window_width, window_height))
+  local inverse_projection_matrix
+  local inverse_projection_ok
+  inverse_projection_matrix, inverse_projection_ok = hg.Inverse(projection_matrix)
+  grid_center = intersect_ground_plane(hg.GetT(camera_world), camera_forward, grid_center)
+  grid_center.y = 0
+  update_grid_nodes(grid_x_nodes, grid_z_nodes, grid_center)
   local measurement_start_world = hg.Vec3(grid_center.x, measurement_height, grid_center.z)
   local measurement_end_world = hg.Vec3(scene_origin.x, measurement_height, scene_origin.z)
-  local label_position, label_matrix = compute_measurement_label_transform(
-    measurement_start_world,
-    measurement_end_world)
+  local measurement_distance = hg.Len(measurement_end_world - measurement_start_world)
   local label_text = string.format("%.0fm", measurement_distance)
+  local label_visible = false
+  local label_anchor_world = (measurement_start_world + measurement_end_world) * 0.5
+  if inverse_projection_ok then
+    label_visible, label_anchor_world = compute_visible_measurement_anchor(
+      projection_matrix,
+      inverse_projection_matrix,
+      view_matrix,
+      camera_world,
+      hg.Vec2(window_width, window_height),
+      measurement_start_world,
+      measurement_end_world)
+  end
+  local label_position, label_matrix, label_anchor_distance = compute_measurement_label_transform(
+    measurement_start_world,
+    measurement_end_world,
+    label_anchor_world)
+  local label_rect = hg.ComputeTextRect(font, label_text)
+  local label_width_world = (label_rect.ex - label_rect.sx) * measurement_label_scale
+  local label_gap_half_length = math.min(
+    measurement_distance * 0.45,
+    label_width_world * 0.5 + measurement_label_gap_padding)
+  update_measurement_nodes(
+    measurement_nodes,
+    measurement_start_world,
+    measurement_end_world,
+    label_visible and label_anchor_distance or nil,
+    label_visible and label_gap_half_length or 0.0)
 
   scene:Update(dt_clock)
   hg.SubmitSceneToPipeline(0, scene, hg.IntRect(0, 0, window_width, window_height), true, pipeline, resources)
   hg.SetViewRect(label_view_id, 0, 0, window_width, window_height)
   hg.SetViewClear(label_view_id, 0)
   hg.SetViewTransform(label_view_id, view_matrix, projection_matrix)
-  hg.DrawText(
-    label_view_id,
-    font,
-    label_text,
-    font_program,
-    "u_tex",
-    0,
-    label_matrix,
-    label_position,
-    hg.DTHA_Center,
-    hg.DTVA_Center,
-    text_uniform_values,
-    {},
-    text_render_state)
+  if label_visible then
+    hg.DrawText(
+      label_view_id,
+      font,
+      label_text,
+      font_program,
+      "u_tex",
+      0,
+      label_matrix,
+      label_position,
+      hg.DTHA_Center,
+      hg.DTVA_Center,
+      text_uniform_values,
+      {},
+      text_render_state)
+  end
   hg.ImGuiEndFrame(imgui_view_id)
 
   hg.Frame()
