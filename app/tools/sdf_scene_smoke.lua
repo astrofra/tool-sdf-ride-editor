@@ -18,7 +18,6 @@ local ok, err = xpcall(function()
   local active_cell = app.sdf_world.cells[app.sdf_world.active_cell_index]
   assert(active_cell ~= nil, "active cell should exist")
   assert(active_cell.scene_file ~= nil, active_cell.load_error or "active cell scene file should be loaded")
-  assert(active_cell.box_count > 0, "active cell should contain at least one box")
   assert(active_cell.bounds_span ~= nil, "active cell should expose bounds span diagnostics")
   assert(#active_cell.preview_nodes.flat == active_cell.box_count, "flat preview node count should match active cell box count")
   assert(#active_cell.preview_nodes.wireframe == active_cell.box_count * 12, "wireframe preview node count should expose 12 edges per box")

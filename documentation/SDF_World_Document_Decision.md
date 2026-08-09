@@ -120,3 +120,10 @@ This comes from:
 
 Those initial bounds are only a default template.
 They remain configurable per cell scene when a specific case needs a different envelope.
+
+By default, a newly created cell also starts with one additive `socle` box:
+
+- centered at `X = 0`, `Z = 0`;
+- spanning the nominal cell footprint in `X/Z`;
+- `5` meters thick;
+- with its top face aligned to local ground `Y = 0`.

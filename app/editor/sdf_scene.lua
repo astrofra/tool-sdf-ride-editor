@@ -1,6 +1,7 @@
 local hg = require("harfang")
 local sdf = require("sdf-generator")
 local sdf_world = require("editor.sdf_world")
+local sdf_cell_factory = require("editor.sdf_cell_factory")
 local ground_plane = require("editor.ground_plane")
 
 local sdf_scene = {}
@@ -13,6 +14,7 @@ local preview_mode_wireframe = 1
 local add_box_color = {166, 174, 186}
 local subtract_box_color = {208, 112, 112}
 local wireframe_line_thickness = 0.08
+local create_preview_nodes_for_cell
 
 local function file_exists(path)
   local handle = io.open(path, "rb")
@@ -22,6 +24,23 @@ local function file_exists(path)
 
   handle:close()
   return true
+end
+
+local function normalize_path(path)
+  return path:gsub("\\", "/")
+end
+
+local function path_dirname(path)
+  local normalized_path = normalize_path(path)
+  return normalized_path:match("^(.*)/[^/]+$") or ""
+end
+
+local function path_join(base, leaf)
+  if base == nil or base == "" then
+    return leaf
+  end
+
+  return base .. "/" .. leaf
 end
 
 local function resolve_default_world_path()
@@ -227,19 +246,40 @@ local function update_cell_placement_cursor(state, frame)
   end
 
   if hg.ImGuiWantCaptureMouse() then
-    placement_state.valid = false
     return
   end
 
   local hit_ok, hit_position = ground_plane.screen_to_ground(frame, frame.mouse:X(), frame.mouse:Y(), 0.0)
   if not hit_ok then
-    placement_state.valid = false
     return
   end
 
   placement_state.world_position = hit_position
   placement_state.snapped_world_position = snap_world_position_to_cell_grid(state.world_document, hit_position)
   placement_state.valid = true
+end
+
+local function handle_cell_placement_confirmation(app, state, frame)
+  local placement_state = state.cell_placement
+  local left_button_down = frame.mouse:Button(hg.MB_0)
+  local clicked_this_frame = left_button_down and not placement_state.left_button_was_down
+
+  placement_state.left_button_was_down = left_button_down
+
+  if not placement_state.active or not placement_state.valid then
+    return false
+  end
+
+  if hg.ImGuiWantCaptureMouse() then
+    return false
+  end
+
+  if not clicked_this_frame then
+    return false
+  end
+
+  local ok = sdf_scene.add_cell_at_position(app, placement_state.snapped_world_position)
+  return ok
 end
 
 local function make_cell_state(cell_document)
@@ -273,6 +313,75 @@ local function make_cell_state(cell_document)
   return cell_state
 end
 
+local function append_cell_state(state, cell_document)
+  local cell_state = make_cell_state(cell_document)
+  state.cells[#state.cells + 1] = cell_state
+
+  if cell_state.scene_file ~= nil then
+    state.loaded_cell_count = state.loaded_cell_count + 1
+    state.total_box_count = state.total_box_count + cell_state.box_count
+    update_cell_bounds_policy_diagnostics(state, cell_state)
+  end
+
+  return cell_state
+end
+
+local function resolve_scene_directory(state)
+  if #state.cells > 0 then
+    local cell_state = state.cells[1]
+    if cell_state ~= nil and cell_state.scene_path ~= nil and cell_state.scene_path ~= "" then
+      local directory = path_dirname(cell_state.scene_path)
+      if directory ~= "" then
+        return directory
+      end
+    end
+  end
+
+  return "sdf-scenes"
+end
+
+local function build_known_cell_name_set(state)
+  local names = {}
+  for index = 1, #state.cells do
+    names[state.cells[index].name] = true
+  end
+  return names
+end
+
+local function allocate_new_cell_identity(state)
+  local scene_directory = resolve_scene_directory(state)
+  local known_names = build_known_cell_name_set(state)
+  local index = 0
+
+  while true do
+    local cell_name = string.format("tile_%03d", index)
+    local scene_path = path_join(scene_directory, cell_name .. ".sdfscene")
+    if not known_names[cell_name] and not file_exists(scene_path) then
+      return cell_name, scene_path
+    end
+    index = index + 1
+  end
+end
+
+local function create_cell_document(cell_name, scene_path, world_position)
+  return {
+    name = cell_name,
+    scene_path = scene_path,
+    world_translation = {
+      x = world_position.x,
+      y = world_position.y,
+      z = world_position.z
+    }
+  }
+end
+
+local function create_cell_preview(app, state, cell_document)
+  local cell_state = append_cell_state(state, cell_document)
+  create_preview_nodes_for_cell(app, state, cell_state)
+  update_preview_visibility(state)
+  set_active_cell_index(state, #state.cells)
+end
+
 local function make_world_state(path)
   local state = {
     path = path,
@@ -289,9 +398,12 @@ local function make_world_state(path)
       active = false,
       valid = false,
       world_position = hg.Vec3(0.0, 0.0, 0.0),
-      snapped_world_position = hg.Vec3(0.0, 0.0, 0.0)
+      snapped_world_position = hg.Vec3(0.0, 0.0, 0.0),
+      left_button_was_down = false
     },
-    materials = {}
+    materials = {},
+    action_error = nil,
+    status_message = nil
   }
 
   local ok, world_document, error_message = sdf_world.load_world_file(path)
@@ -304,20 +416,13 @@ local function make_world_state(path)
   state.active_cell_index = world_document.active_cell_index
 
   for index = 1, #world_document.cells do
-    local cell_state = make_cell_state(world_document.cells[index])
-    state.cells[#state.cells + 1] = cell_state
-
-    if cell_state.scene_file ~= nil then
-      state.loaded_cell_count = state.loaded_cell_count + 1
-      state.total_box_count = state.total_box_count + cell_state.box_count
-      update_cell_bounds_policy_diagnostics(state, cell_state)
-    end
+    append_cell_state(state, world_document.cells[index])
   end
 
   return state
 end
 
-local function create_preview_nodes_for_cell(app, state, cell_state)
+create_preview_nodes_for_cell = function(app, state, cell_state)
   if cell_state.scene_file == nil then
     return
   end
@@ -375,11 +480,70 @@ local function create_preview_nodes(app, state)
   update_preview_visibility(state)
 end
 
-function sdf_scene.attach(app)
-  local state = make_world_state(resolve_default_world_path())
+local function add_cell_at_position(app, state, world_position)
+  local cell_name, scene_path = allocate_new_cell_identity(state)
+  local scene_file = sdf_cell_factory.make_default_scene_file(state.world_document, cell_name)
+  local scene_saved, scene_save_error = sdf.save_scene_file(scene_file, scene_path)
+  if not scene_saved then
+    return false, scene_save_error
+  end
+
+  local cell_document = create_cell_document(cell_name, scene_path, world_position)
+  local document = state.world_document
+  document.cells[#document.cells + 1] = cell_document
+  document.active_cell_name = cell_name
+
+  local world_saved, world_save_error = sdf_world.save_world_file(state.path, document)
+  if not world_saved then
+    os.remove(scene_path)
+    document.cells[#document.cells] = nil
+    return false, world_save_error
+  end
+
+  create_cell_preview(app, state, cell_document)
+  return true, cell_name
+end
+
+function sdf_scene.attach(app, world_path)
+  local state = make_world_state(world_path or resolve_default_world_path())
   create_preview_nodes(app, state)
   app.sdf = state
   app.sdf_world = state
+end
+
+function sdf_scene.add_cell_at_position(app, world_position)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local ok, result = add_cell_at_position(app, state, world_position)
+  if not ok then
+    state.action_error = result
+    state.status_message = nil
+    return false, result
+  end
+
+  state.action_error = nil
+  state.status_message = string.format(
+    "Created cell %s at %.2f, %.2f, %.2f",
+    result,
+    world_position.x,
+    world_position.y,
+    world_position.z)
+  state.cell_placement.active = false
+  state.cell_placement.valid = false
+
+  return true, result
+end
+
+function sdf_scene.handle_cell_placement_confirmation(app, frame)
+  local state = app.sdf_world or app.sdf
+  if state == nil then
+    return false
+  end
+
+  return handle_cell_placement_confirmation(app, state, frame)
 end
 
 function sdf_scene.update(app, frame)
@@ -404,6 +568,12 @@ function sdf_scene.update(app, frame)
       hg.ImGuiTextWrapped("Load error:")
       hg.ImGuiTextWrapped(state.load_error)
     else
+      if state.action_error ~= nil then
+        hg.ImGuiTextWrapped(string.format("Action Error: %s", state.action_error))
+      elseif state.status_message ~= nil then
+        hg.ImGuiTextWrapped(state.status_message)
+      end
+
       local active_cell = get_active_cell(state)
       local active_cell_name = active_cell ~= nil and active_cell.name or "<none>"
 
@@ -429,13 +599,16 @@ function sdf_scene.update(app, frame)
       end
 
       if state.cell_placement.active then
-        hg.ImGuiTextWrapped("Placement mode is armed. Move the mouse over the ground in the 3D viewport. The red square shows the next cell footprint snapped on the cell grid.")
+        hg.ImGuiTextWrapped("Placement mode is armed. Move the mouse over the ground in the 3D viewport. Left-click in the viewport to create the cell directly. The red square shows the next cell footprint snapped on the cell grid.")
         if state.cell_placement.valid then
           hg.ImGuiText(string.format(
             "Next Cell Center: %.2f, %.2f, %.2f",
             state.cell_placement.snapped_world_position.x,
             state.cell_placement.snapped_world_position.y,
             state.cell_placement.snapped_world_position.z))
+          if hg.ImGuiButton("Create Cell Here") then
+            sdf_scene.add_cell_at_position(app, state.cell_placement.snapped_world_position)
+          end
         else
           hg.ImGuiTextWrapped("Placement cursor is waiting for a valid ground hit in the 3D viewport.")
         end
@@ -534,6 +707,8 @@ function sdf_scene.update(app, frame)
   end
 
   hg.ImGuiEnd()
+
+  handle_cell_placement_confirmation(app, state, frame)
 end
 
 return sdf_scene

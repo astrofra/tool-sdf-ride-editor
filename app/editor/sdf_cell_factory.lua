@@ -3,11 +3,24 @@ local sdf = require("sdf-generator")
 local sdf_cell_factory = {}
 
 local default_scene_build_cell_size = 1.0
+local default_base_box_name = "socle"
+local default_base_box_thickness = 5.0
 
 local function assign_vec3(target, x, y, z)
   target.x = x
   target.y = y
   target.z = z
+end
+
+local function append_default_base_box(scene_file, world_document)
+  local box = sdf.SdfBox()
+  local half_thickness = default_base_box_thickness * 0.5
+
+  box.name = default_base_box_name
+  assign_vec3(box.transform.translation, 0.0, -half_thickness, 0.0)
+  assign_vec3(box.half_size, world_document.cell_size * 0.5, half_thickness, world_document.cell_size * 0.5)
+
+  scene_file.scene.boxes:push_back(box)
 end
 
 local function make_default_scene_bounds_values(world_document)
@@ -44,6 +57,7 @@ function sdf_cell_factory.make_default_scene_file(world_document, scene_name)
   assign_vec3(bounds.min, values.min_x, values.min_y, values.min_z)
   assign_vec3(bounds.max, values.max_x, values.max_y, values.max_z)
   scene_file.build_settings.cell_size = default_scene_build_cell_size
+  append_default_base_box(scene_file, world_document)
 
   return scene_file
 end

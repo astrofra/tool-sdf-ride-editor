@@ -7,7 +7,13 @@
 #   cell <cell_name> <scene_path> <tx> <ty> <tz>
 
 world default_blockout_world
-cell_size 100.0
-cell_bounds_padding 10.0
-active_cell tile_000
-cell tile_000 sdf-scenes/tile_000.sdfscene 0 0 0
+cell_size 100.000000
+cell_bounds_padding 10.000000
+active_cell tile_006
+cell tile_000 sdf-scenes/tile_000.sdfscene 0.000000 0.000000 0.000000
+cell tile_001 sdf-scenes/tile_001.sdfscene -100.000000 0.000000 0.000000
+cell tile_002 sdf-scenes/tile_002.sdfscene 0.000000 0.000000 100.000000
+cell tile_003 sdf-scenes/tile_003.sdfscene -100.000000 0.000000 -100.000000
+cell tile_004 sdf-scenes/tile_004.sdfscene -200.000000 0.000000 0.000000
+cell tile_005 sdf-scenes/tile_005.sdfscene 0.000000 0.000000 -200.000000
+cell tile_006 sdf-scenes/tile_006.sdfscene 100.000000 0.000000 -100.000000

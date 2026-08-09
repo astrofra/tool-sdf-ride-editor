@@ -40,6 +40,14 @@ local function find_cell_index(cells, cell_name)
   return nil
 end
 
+local function ensure_world_document_metadata(document)
+  if document.cell_bounds_padding == nil then
+    document.cell_bounds_padding = document.cell_size * 0.1
+  end
+
+  document.effective_cell_span = document.cell_size + document.cell_bounds_padding * 2.0
+end
+
 function sdf_world.load_world_file(path)
   local handle = io.open(path, "rb")
   if handle == nil then
@@ -170,10 +178,7 @@ function sdf_world.load_world_file(path)
   if document.cell_size == nil or document.cell_size <= 0.0 then
     return false, nil, string.format("World document is missing a valid 'cell_size': %s", path)
   end
-  if document.cell_bounds_padding == nil then
-    document.cell_bounds_padding = document.cell_size * 0.1
-  end
-  document.effective_cell_span = document.cell_size + document.cell_bounds_padding * 2.0
+  ensure_world_document_metadata(document)
   if #document.cells == 0 then
     return false, nil, string.format("World document does not define any cells: %s", path)
   end
@@ -191,6 +196,70 @@ function sdf_world.load_world_file(path)
   end
 
   return true, document, nil
+end
+
+function sdf_world.save_world_file(path, document)
+  if document == nil then
+    return false, "World document save requires a document"
+  end
+
+  if document.name == nil or document.name == "" then
+    return false, "World document save requires a non-empty world name"
+  end
+
+  if document.cell_size == nil or document.cell_size <= 0.0 then
+    return false, "World document save requires a positive cell_size"
+  end
+
+  if #document.cells == 0 then
+    return false, "World document save requires at least one cell"
+  end
+
+  ensure_world_document_metadata(document)
+
+  local active_cell_name = document.active_cell_name
+  if active_cell_name == nil or active_cell_name == "" then
+    active_cell_name = document.cells[1].name
+  end
+
+  if find_cell_index(document.cells, active_cell_name) == nil then
+    return false, string.format("World document save references unknown active cell '%s'", active_cell_name)
+  end
+
+  local handle = io.open(path, "wb")
+  if handle == nil then
+    return false, string.format("Could not open world document for writing: %s", path)
+  end
+
+  handle:write("# Master world document for the editor prototype.\n")
+  handle:write("# Syntax:\n")
+  handle:write("#   world <name>\n")
+  handle:write("#   cell_size <value>\n")
+  handle:write("#   cell_bounds_padding <value>\n")
+  handle:write("#   active_cell <cell_name>\n")
+  handle:write("#   cell <cell_name> <scene_path> <tx> <ty> <tz>\n\n")
+  handle:write(string.format("world %s\n", document.name))
+  handle:write(string.format("cell_size %.6f\n", document.cell_size))
+  handle:write(string.format("cell_bounds_padding %.6f\n", document.cell_bounds_padding))
+  handle:write(string.format("active_cell %s\n", active_cell_name))
+
+  for index = 1, #document.cells do
+    local cell = document.cells[index]
+    handle:write(string.format(
+      "cell %s %s %.6f %.6f %.6f\n",
+      cell.name,
+      cell.scene_path,
+      cell.world_translation.x,
+      cell.world_translation.y,
+      cell.world_translation.z))
+  end
+
+  handle:close()
+
+  document.active_cell_name = active_cell_name
+  document.active_cell_index = find_cell_index(document.cells, active_cell_name)
+
+  return true, nil
 end
 
 return sdf_world
