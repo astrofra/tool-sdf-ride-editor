@@ -1,6 +1,7 @@
 local hg = require("harfang")
 local sdf = require("sdf-generator")
 local sdf_world = require("editor.sdf_world")
+local ground_plane = require("editor.ground_plane")
 
 local sdf_scene = {}
 
@@ -134,6 +135,21 @@ local function create_wireframe_box_nodes(scene, line_ref, material, translation
   end
 end
 
+local function snap_to_nearest_step(value, step)
+  if step <= 0.0 then
+    return value
+  end
+
+  return math.floor(value / step + 0.5) * step
+end
+
+local function snap_world_position_to_cell_grid(world_document, position)
+  return hg.Vec3(
+    snap_to_nearest_step(position.x, world_document.cell_size),
+    0.0,
+    snap_to_nearest_step(position.z, world_document.cell_size))
+end
+
 local function compute_bounds_span(bounds)
   return {
     x = bounds.max.x - bounds.min.x,
@@ -203,6 +219,29 @@ local function set_active_cell_index(state, new_index)
   update_preview_visibility(state)
 end
 
+local function update_cell_placement_cursor(state, frame)
+  local placement_state = state.cell_placement
+  if not placement_state.active or state.world_document == nil then
+    placement_state.valid = false
+    return
+  end
+
+  if hg.ImGuiWantCaptureMouse() then
+    placement_state.valid = false
+    return
+  end
+
+  local hit_ok, hit_position = ground_plane.screen_to_ground(frame, frame.mouse:X(), frame.mouse:Y(), 0.0)
+  if not hit_ok then
+    placement_state.valid = false
+    return
+  end
+
+  placement_state.world_position = hit_position
+  placement_state.snapped_world_position = snap_world_position_to_cell_grid(state.world_document, hit_position)
+  placement_state.valid = true
+end
+
 local function make_cell_state(cell_document)
   local cell_state = {
     name = cell_document.name,
@@ -246,6 +285,12 @@ local function make_world_state(path)
     cells = {},
     total_box_count = 0,
     loaded_cell_count = 0,
+    cell_placement = {
+      active = false,
+      valid = false,
+      world_position = hg.Vec3(0.0, 0.0, 0.0),
+      snapped_world_position = hg.Vec3(0.0, 0.0, 0.0)
+    },
     materials = {}
   }
 
@@ -343,6 +388,8 @@ function sdf_scene.update(app, frame)
     return
   end
 
+  update_cell_placement_cursor(state, frame)
+
   hg.ImGuiSetNextWindowPos(hg.Vec2(frame.window_width - 344, 24))
   hg.ImGuiSetNextWindowSize(hg.Vec2(320, 0))
 
@@ -369,6 +416,32 @@ function sdf_scene.update(app, frame)
       hg.ImGuiText(string.format("Active Cell: %s", active_cell_name))
       hg.ImGuiTextWrapped(string.format("World Path: %s", state.path))
       hg.ImGuiSeparator()
+      if not state.cell_placement.active then
+        if hg.ImGuiButton("Add Cell") then
+          state.cell_placement.active = true
+          state.cell_placement.valid = false
+        end
+      else
+        if hg.ImGuiButton("Cancel Add Cell") then
+          state.cell_placement.active = false
+          state.cell_placement.valid = false
+        end
+      end
+
+      if state.cell_placement.active then
+        hg.ImGuiTextWrapped("Placement mode is armed. Move the mouse over the ground in the 3D viewport. The red square shows the next cell footprint snapped on the cell grid.")
+        if state.cell_placement.valid then
+          hg.ImGuiText(string.format(
+            "Next Cell Center: %.2f, %.2f, %.2f",
+            state.cell_placement.snapped_world_position.x,
+            state.cell_placement.snapped_world_position.y,
+            state.cell_placement.snapped_world_position.z))
+        else
+          hg.ImGuiTextWrapped("Placement cursor is waiting for a valid ground hit in the 3D viewport.")
+        end
+        hg.ImGuiSeparator()
+      end
+
       hg.ImGuiText("Preview Mode:")
 
       local preview_mode_changed

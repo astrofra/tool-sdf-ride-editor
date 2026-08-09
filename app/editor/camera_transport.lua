@@ -1,4 +1,5 @@
 local hg = require("harfang")
+local ground_plane = require("editor.ground_plane")
 
 local camera_transport = {}
 
@@ -8,6 +9,8 @@ local min_distance = 6.0
 local max_distance = 220.0
 local min_pitch = math.rad(10.0)
 local max_pitch = math.rad(85.0)
+local default_pan_limit_in_cells = 2.0
+local default_pan_step_limit_in_cells = 0.05
 
 local function get_active_cell_ground_pivot(app)
   local world_state = app.sdf_world or app.sdf
@@ -23,6 +26,18 @@ end
 
 local function clamp_pitch(pitch)
   return hg.Clamp(pitch, min_pitch, max_pitch)
+end
+
+local function get_world_cell_size(app)
+  local world_state = app.sdf_world or app.sdf
+  if world_state ~= nil and world_state.world_document ~= nil then
+    local cell_size = world_state.world_document.cell_size
+    if cell_size ~= nil and cell_size > 0.0 then
+      return cell_size
+    end
+  end
+
+  return 100.0
 end
 
 local function compute_orbit_state_from_camera(position, pivot)
@@ -55,6 +70,69 @@ local function center_on_pivot(app, state, pivot)
   sync_camera_transform(app, state)
 end
 
+local function clamp_pivot_to_active_cell(app, state)
+  local anchor = get_active_cell_ground_pivot(app)
+  local max_radius = get_world_cell_size(app) * state.pan_limit_in_cells
+  local dt_x = state.pivot.x - anchor.x
+  local dt_z = state.pivot.z - anchor.z
+  local distance = math.sqrt(dt_x * dt_x + dt_z * dt_z)
+
+  if distance <= max_radius or distance <= 0.0 then
+    return
+  end
+
+  local scale = max_radius / distance
+  state.pivot = hg.Vec3(
+    anchor.x + dt_x * scale,
+    state.pivot.y,
+    anchor.z + dt_z * scale)
+end
+
+local function clamp_pan_delta(app, state, drag_delta)
+  local max_step = get_world_cell_size(app) * state.pan_step_limit_in_cells
+  local planar_length = math.sqrt(drag_delta.x * drag_delta.x + drag_delta.z * drag_delta.z)
+
+  if planar_length <= max_step or planar_length <= 0.0 then
+    return drag_delta
+  end
+
+  local scale = max_step / planar_length
+  return hg.Vec3(
+    drag_delta.x * scale,
+    drag_delta.y,
+    drag_delta.z * scale)
+end
+
+local function is_shift_down(frame)
+  return frame.keyboard:Key(hg.K_LShift) or frame.keyboard:Key(hg.K_RShift)
+end
+
+function camera_transport.apply_pan_delta(app, state, drag_delta)
+  local clamped_drag_delta = clamp_pan_delta(app, state, drag_delta)
+  state.pivot = hg.Vec3(
+    state.pivot.x + clamped_drag_delta.x,
+    state.pivot.y,
+    state.pivot.z + clamped_drag_delta.z)
+
+  return clamped_drag_delta
+end
+
+local function pan_from_mouse_drag(app, state, frame, mouse_x, mouse_y, dt_x, dt_y)
+  local previous_hit_ok
+  local previous_hit
+  previous_hit_ok, previous_hit = ground_plane.screen_to_ground(frame, mouse_x - dt_x, mouse_y - dt_y, 0.0)
+  local current_hit_ok
+  local current_hit
+  current_hit_ok, current_hit = ground_plane.screen_to_ground(frame, mouse_x, mouse_y, 0.0)
+
+  if not previous_hit_ok or not current_hit_ok then
+    return
+  end
+
+  local drag_delta = previous_hit - current_hit
+  camera_transport.apply_pan_delta(app, state, drag_delta)
+end
+
 local function update_mouse_deltas(state, frame)
   local mouse_x = frame.mouse:X()
   local mouse_y = frame.mouse:Y()
@@ -82,6 +160,8 @@ function camera_transport.attach(app)
     yaw = yaw,
     pitch = pitch,
     distance = distance,
+    pan_limit_in_cells = default_pan_limit_in_cells,
+    pan_step_limit_in_cells = default_pan_step_limit_in_cells,
     position = app.scene.camera_position,
     last_mouse_x = nil,
     last_mouse_y = nil
@@ -92,6 +172,10 @@ end
 
 function camera_transport.update(app, frame)
   local state = app.camera_transport
+  local mouse_x = frame.mouse:X()
+  local mouse_y = frame.mouse:Y()
+  local pan_limit_in_world_units = get_world_cell_size(app) * state.pan_limit_in_cells
+  local pan_step_limit_in_world_units = get_world_cell_size(app) * state.pan_step_limit_in_cells
 
   hg.ImGuiSetNextWindowPos(hg.Vec2(24, frame.window_height - 136))
   hg.ImGuiSetNextWindowSize(hg.Vec2(380, 0))
@@ -103,9 +187,11 @@ function camera_transport.update(app, frame)
     "Camera Transport",
     true,
     hg.ImGuiWindowFlags_NoMove | hg.ImGuiWindowFlags_NoResize | hg.ImGuiWindowFlags_NoCollapse) then
-    hg.ImGuiTextWrapped("Right-drag orbits around the ground pivot at the screen center. Mouse wheel zooms along the camera local Z axis.")
+    hg.ImGuiTextWrapped("Right-drag orbits around the ground pivot. Shift+Right-drag translates the camera by grabbing the ground. Middle-drag remains available as a fallback. Mouse wheel zooms along the camera local Z axis.")
     hg.ImGuiText(string.format("Pivot: %.2f, %.2f, %.2f", state.pivot.x, state.pivot.y, state.pivot.z))
     hg.ImGuiText(string.format("Distance: %.2f", state.distance))
+    hg.ImGuiText(string.format("Pan Clamp: %.1f cells (%.2f m)", state.pan_limit_in_cells, pan_limit_in_world_units))
+    hg.ImGuiText(string.format("Pan Step Clamp: %.2f cells/frame (%.2f m)", state.pan_step_limit_in_cells, pan_step_limit_in_world_units))
 
     if hg.ImGuiButton("Center On Active Cell") then
       center_on_active_cell_requested = true
@@ -127,7 +213,11 @@ function camera_transport.update(app, frame)
   local mouse_captured_by_imgui = hg.ImGuiWantCaptureMouse()
 
   if not mouse_captured_by_imgui then
-    if frame.mouse:Button(hg.MB_1) then
+    local pan_requested = frame.mouse:Button(hg.MB_2) or (frame.mouse:Button(hg.MB_1) and is_shift_down(frame))
+
+    if pan_requested then
+      pan_from_mouse_drag(app, state, frame, mouse_x, mouse_y, dt_x, dt_y)
+    elseif frame.mouse:Button(hg.MB_1) then
       state.yaw = state.yaw - dt_x * orbit_sensitivity
       state.pitch = clamp_pitch(state.pitch - dt_y * orbit_sensitivity)
     end
@@ -137,6 +227,7 @@ function camera_transport.update(app, frame)
     end
   end
 
+  clamp_pivot_to_active_cell(app, state)
   sync_camera_transform(app, state)
 end
 

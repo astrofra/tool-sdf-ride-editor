@@ -11,6 +11,7 @@ local function run_app(app)
     end
 
     if not frame.skip_frame then
+      runtime.prepare_camera_frame(app, frame)
       camera_transport.update(app, frame)
       runtime.prepare_camera_frame(app, frame)
       sdf_scene.update(app, frame)

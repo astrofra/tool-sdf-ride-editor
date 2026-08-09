@@ -10,6 +10,8 @@ local ok, err = xpcall(function()
   assert(app.sdf_world.world_document ~= nil, app.sdf_world.load_error or "world document should be loaded")
   assert(math.abs(app.sdf_world.world_document.cell_bounds_padding - 10.0) < 0.0001, "world should expose 10m bounds padding")
   assert(math.abs(app.sdf_world.world_document.effective_cell_span - 120.0) < 0.0001, "world should expose 120m effective span")
+  assert(app.sdf_world.cell_placement ~= nil, "world should expose cell placement state")
+  assert(app.sdf_world.cell_placement.active == false, "cell placement should be idle by default")
   assert(#app.sdf_world.cells > 0, "world should contain at least one cell")
   assert(app.sdf_world.active_cell_index ~= nil, "world should define an active cell")
 
