@@ -1,6 +1,7 @@
 local runtime = require("editor.runtime")
 local camera_transport = require("editor.camera_transport")
 local gizmos = require("editor.gizmos")
+local log_panel = require("editor.log_panel")
 local sdf_scene = require("editor.sdf_scene")
 
 local function run_app(app)
@@ -16,6 +17,7 @@ local function run_app(app)
       runtime.prepare_camera_frame(app, frame)
       sdf_scene.update(app, frame)
       gizmos.update(app, frame)
+      log_panel.update(app, frame)
 
       runtime.render_scene(app, frame)
     end

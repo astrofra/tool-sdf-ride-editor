@@ -1,5 +1,6 @@
 local hg = require("harfang")
 local ground_plane = require("editor.ground_plane")
+local log_panel = require("editor.log_panel")
 
 local camera_transport = {}
 
@@ -168,17 +169,21 @@ function camera_transport.attach(app)
   }
 
   sync_camera_transform(app, app.camera_transport)
+  log_panel.info(
+    app,
+    string.format(
+      "Camera ready: orbit RMB, pan Shift+RMB or MMB, zoom wheel. Clamp %.1f cells, step %.2f cells/frame.",
+      app.camera_transport.pan_limit_in_cells,
+      app.camera_transport.pan_step_limit_in_cells))
 end
 
 function camera_transport.update(app, frame)
   local state = app.camera_transport
   local mouse_x = frame.mouse:X()
   local mouse_y = frame.mouse:Y()
-  local pan_limit_in_world_units = get_world_cell_size(app) * state.pan_limit_in_cells
-  local pan_step_limit_in_world_units = get_world_cell_size(app) * state.pan_step_limit_in_cells
 
-  hg.ImGuiSetNextWindowPos(hg.Vec2(24, frame.window_height - 136))
-  hg.ImGuiSetNextWindowSize(hg.Vec2(380, 0))
+  hg.ImGuiSetNextWindowPos(hg.Vec2(24, frame.window_height - 284))
+  hg.ImGuiSetNextWindowSize(hg.Vec2(320, 0))
 
   local center_on_active_cell_requested = false
   local center_on_origin_requested = false
@@ -187,12 +192,6 @@ function camera_transport.update(app, frame)
     "Camera Transport",
     true,
     hg.ImGuiWindowFlags_NoMove | hg.ImGuiWindowFlags_NoResize | hg.ImGuiWindowFlags_NoCollapse) then
-    hg.ImGuiTextWrapped("Right-drag orbits around the ground pivot. Shift+Right-drag translates the camera by grabbing the ground. Middle-drag remains available as a fallback. Mouse wheel zooms along the camera local Z axis.")
-    hg.ImGuiText(string.format("Pivot: %.2f, %.2f, %.2f", state.pivot.x, state.pivot.y, state.pivot.z))
-    hg.ImGuiText(string.format("Distance: %.2f", state.distance))
-    hg.ImGuiText(string.format("Pan Clamp: %.1f cells (%.2f m)", state.pan_limit_in_cells, pan_limit_in_world_units))
-    hg.ImGuiText(string.format("Pan Step Clamp: %.2f cells/frame (%.2f m)", state.pan_step_limit_in_cells, pan_step_limit_in_world_units))
-
     if hg.ImGuiButton("Center On Active Cell") then
       center_on_active_cell_requested = true
     end
@@ -205,8 +204,10 @@ function camera_transport.update(app, frame)
 
   if center_on_active_cell_requested then
     center_on_pivot(app, state, get_active_cell_ground_pivot(app))
+    log_panel.info(app, "Camera centered on active cell")
   elseif center_on_origin_requested then
     center_on_pivot(app, state, hg.Vec3(app.scene.origin.x, 0.0, app.scene.origin.z))
+    log_panel.info(app, "Camera centered on origin")
   end
 
   local dt_x, dt_y, dt_wheel = update_mouse_deltas(state, frame)

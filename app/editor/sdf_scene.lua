@@ -1,5 +1,6 @@
 local hg = require("harfang")
 local sdf = require("sdf-generator")
+local log_panel = require("editor.log_panel")
 local sdf_world = require("editor.sdf_world")
 local sdf_cell_factory = require("editor.sdf_cell_factory")
 local ground_plane = require("editor.ground_plane")
@@ -212,6 +213,70 @@ local function get_active_cell(state)
   return state.cells[state.active_cell_index]
 end
 
+local function format_vec3_components(vec3)
+  return string.format("%.2f, %.2f, %.2f", vec3.x, vec3.y, vec3.z)
+end
+
+local function log_active_cell_state(app, state, prefix)
+  local active_cell = get_active_cell(state)
+  if active_cell == nil then
+    log_panel.warn(app, string.format("%s: no active cell", prefix or "Active cell"))
+    return
+  end
+
+  if active_cell.load_error ~= nil then
+    log_panel.error(app, string.format("%s: %s failed to load (%s)", prefix or "Active cell", active_cell.name, active_cell.load_error))
+    return
+  end
+
+  log_panel.info(
+    app,
+    string.format(
+      "%s: %s at %s (%d boxes)",
+      prefix or "Active cell",
+      active_cell.name,
+      format_vec3_components(active_cell.world_translation),
+      active_cell.box_count))
+
+  if active_cell.exceeds_world_bounds_policy then
+    log_panel.warn(
+      app,
+      string.format(
+        "%s exceeds the shared %.2f m bounds policy by x %.2f, y %.2f, z %.2f",
+        active_cell.name,
+        state.world_document.effective_cell_span,
+        active_cell.bounds_policy_overflow.x,
+        active_cell.bounds_policy_overflow.y,
+        active_cell.bounds_policy_overflow.z))
+  end
+end
+
+local function log_loaded_world_state(app, state)
+  if state.load_error ~= nil then
+    log_panel.error(app, state.load_error)
+    return
+  end
+
+  log_panel.info(
+    app,
+    string.format(
+      "Loaded world %s from %s (%d cells, %d loaded, %d boxes)",
+      state.world_document.name,
+      state.path,
+      #state.cells,
+      state.loaded_cell_count,
+      state.total_box_count))
+
+  log_active_cell_state(app, state, "Active cell")
+
+  for index = 1, #state.cells do
+    local cell_state = state.cells[index]
+    if cell_state.load_error ~= nil then
+      log_panel.error(app, string.format("%s failed to load (%s)", cell_state.name, cell_state.load_error))
+    end
+  end
+end
+
 local function cancel_cell_placement(state)
   state.cell_placement.active = false
   state.cell_placement.valid = false
@@ -230,12 +295,14 @@ local function update_preview_visibility(state)
   end
 end
 
-local function set_active_cell_index(state, new_index)
+local function set_active_cell_index(state, new_index, app, log_prefix)
   local cell_count = #state.cells
   if cell_count == 0 then
     state.active_cell_index = nil
     return
   end
+
+  local previous_index = state.active_cell_index
 
   if new_index < 1 then
     new_index = cell_count
@@ -248,6 +315,10 @@ local function set_active_cell_index(state, new_index)
   state.world_document.active_cell_name = state.cells[new_index].name
   state.delete_cell_confirmation_armed = false
   update_preview_visibility(state)
+
+  if app ~= nil and previous_index ~= new_index then
+    log_active_cell_state(app, state, log_prefix or "Active cell")
+  end
 end
 
 local function update_cell_placement_cursor(state, frame)
@@ -391,7 +462,7 @@ local function create_cell_preview(app, state, cell_document)
   local cell_state = append_cell_state(state, cell_document)
   create_preview_nodes_for_cell(app, state, cell_state)
   update_preview_visibility(state)
-  set_active_cell_index(state, #state.cells)
+  set_active_cell_index(state, #state.cells, app, "Active cell")
 end
 
 local function remove_cell_preview(app, cell_state)
@@ -436,9 +507,7 @@ local function make_world_state(path)
       left_button_was_down = false
     },
     delete_cell_confirmation_armed = false,
-    materials = {},
-    action_error = nil,
-    status_message = nil
+    materials = {}
   }
 
   local ok, world_document, error_message = sdf_world.load_world_file(path)
@@ -572,7 +641,7 @@ local function delete_active_cell(app, state)
   end
 
   remove_cell_state_at_index(app, state, delete_index)
-  set_active_cell_index(state, math.min(delete_index, #state.cells))
+  set_active_cell_index(state, math.min(delete_index, #state.cells), app, "Active cell")
   cancel_cell_placement(state)
 
   local scene_deleted, scene_delete_error = os.remove(deleted_cell_state.scene_path)
@@ -586,10 +655,12 @@ local function delete_active_cell(app, state)
 end
 
 function sdf_scene.attach(app, world_path)
+  log_panel.attach(app)
   local state = make_world_state(world_path or resolve_default_world_path())
   create_preview_nodes(app, state)
   app.sdf = state
   app.sdf_world = state
+  log_loaded_world_state(app, state)
 end
 
 function sdf_scene.add_cell_at_position(app, world_position)
@@ -600,18 +671,18 @@ function sdf_scene.add_cell_at_position(app, world_position)
 
   local ok, result = add_cell_at_position(app, state, world_position)
   if not ok then
-    state.action_error = result
-    state.status_message = nil
+    log_panel.error(app, string.format("Add cell failed: %s", result))
     return false, result
   end
 
-  state.action_error = nil
-  state.status_message = string.format(
-    "Created cell %s at %.2f, %.2f, %.2f",
-    result,
-    world_position.x,
-    world_position.y,
-    world_position.z)
+  log_panel.info(
+    app,
+    string.format(
+      "Created cell %s at %.2f, %.2f, %.2f",
+      result,
+      world_position.x,
+      world_position.y,
+      world_position.z))
   cancel_cell_placement(state)
 
   return true, result
@@ -627,20 +698,20 @@ function sdf_scene.delete_active_cell(app)
 
   local ok, result = delete_active_cell(app, state)
   if not ok then
-    state.action_error = result
-    state.status_message = nil
+    log_panel.error(app, string.format("Delete cell failed: %s", result))
     return false, result
   end
 
-  state.action_error = nil
   if result.scene_deleted then
-    state.status_message = string.format("Deleted cell %s", result.cell_name)
+    log_panel.info(app, string.format("Deleted cell %s", result.cell_name))
   else
-    state.status_message = string.format(
-      "Deleted cell %s from the world, but could not remove %s (%s)",
-      result.cell_name,
-      result.scene_path,
-      tostring(result.scene_delete_error))
+    log_panel.warn(
+      app,
+      string.format(
+        "Deleted cell %s from the world, but could not remove %s (%s)",
+        result.cell_name,
+        result.scene_path,
+        tostring(result.scene_delete_error)))
   end
 
   return true, result.cell_name
@@ -670,40 +741,21 @@ function sdf_scene.update(app, frame)
     "SDF Scene",
     true,
     hg.ImGuiWindowFlags_NoMove | hg.ImGuiWindowFlags_NoResize | hg.ImGuiWindowFlags_NoCollapse) then
-    hg.ImGuiTextWrapped(
-      "Cells keep their objects in local space. The world document owns cell placement and shared envelope metadata.")
-
-    if state.load_error ~= nil then
-      hg.ImGuiTextWrapped("Load error:")
-      hg.ImGuiTextWrapped(state.load_error)
-    else
-      if state.action_error ~= nil then
-        hg.ImGuiTextWrapped(string.format("Action Error: %s", state.action_error))
-      elseif state.status_message ~= nil then
-        hg.ImGuiTextWrapped(state.status_message)
-      end
-
+    if state.load_error == nil then
       local active_cell = get_active_cell(state)
       local active_cell_name = active_cell ~= nil and active_cell.name or "<none>"
 
-      hg.ImGuiText(string.format("World: %s", state.world_document.name))
-      hg.ImGuiText(string.format("Cells: %d (%d loaded)", #state.cells, state.loaded_cell_count))
-      hg.ImGuiText(string.format("Total Boxes: %d", state.total_box_count))
-      hg.ImGuiText(string.format("Cell Size: %.2f", state.world_document.cell_size))
-      hg.ImGuiText(string.format("Cell Bounds Padding: %.2f", state.world_document.cell_bounds_padding))
-      hg.ImGuiText(string.format("Effective Bounds Span: %.2f", state.world_document.effective_cell_span))
-      hg.ImGuiText(string.format("Active Cell: %s", active_cell_name))
-      hg.ImGuiTextWrapped(string.format("World Path: %s", state.path))
-      hg.ImGuiSeparator()
       if not state.cell_placement.active then
         if hg.ImGuiButton("Add Cell") then
           state.delete_cell_confirmation_armed = false
           state.cell_placement.active = true
           state.cell_placement.valid = false
+          log_panel.info(app, "Add cell armed. Move over the ground and left-click, or use Create Cell Here.")
         end
       else
         if hg.ImGuiButton("Cancel Add Cell") then
           cancel_cell_placement(state)
+          log_panel.info(app, "Add cell cancelled")
         end
       end
 
@@ -711,11 +763,13 @@ function sdf_scene.update(app, frame)
       if not state.delete_cell_confirmation_armed then
         if hg.ImGuiButton("Delete Active Cell") then
           if #state.cells <= 1 then
-            state.action_error = "Cannot delete the last remaining cell"
-            state.status_message = nil
+            log_panel.warn(app, "Cannot delete the last remaining cell")
           else
             cancel_cell_placement(state)
             state.delete_cell_confirmation_armed = true
+            log_panel.warn(
+              app,
+              string.format("Delete armed for %s. Confirm to remove the cell and its scene file.", active_cell_name))
           end
         end
       else
@@ -725,32 +779,17 @@ function sdf_scene.update(app, frame)
         hg.ImGuiSameLine()
         if hg.ImGuiButton("Cancel Delete") then
           state.delete_cell_confirmation_armed = false
+          log_panel.info(app, string.format("Delete cancelled for %s", active_cell_name))
         end
       end
 
-      if state.cell_placement.active then
-        hg.ImGuiTextWrapped("Placement mode is armed. Move the mouse over the ground in the 3D viewport. Left-click in the viewport to create the cell directly. The red square shows the next cell footprint snapped on the cell grid.")
-        if state.cell_placement.valid then
-          hg.ImGuiText(string.format(
-            "Next Cell Center: %.2f, %.2f, %.2f",
-            state.cell_placement.snapped_world_position.x,
-            state.cell_placement.snapped_world_position.y,
-            state.cell_placement.snapped_world_position.z))
-          if hg.ImGuiButton("Create Cell Here") then
-            sdf_scene.add_cell_at_position(app, state.cell_placement.snapped_world_position)
-          end
-        else
-          hg.ImGuiTextWrapped("Placement cursor is waiting for a valid ground hit in the 3D viewport.")
+      if state.cell_placement.active and state.cell_placement.valid then
+        if hg.ImGuiButton("Create Cell Here") then
+          sdf_scene.add_cell_at_position(app, state.cell_placement.snapped_world_position)
         end
-        hg.ImGuiSeparator()
-      elseif state.delete_cell_confirmation_armed then
-        hg.ImGuiTextWrapped(string.format(
-          "Delete %s from the world and remove its dedicated .sdfscene file.",
-          active_cell_name))
-        hg.ImGuiSeparator()
       end
 
-      hg.ImGuiText("Preview Mode:")
+      hg.ImGuiSeparator()
 
       local preview_mode_changed
       preview_mode_changed, state.preview_mode = hg.ImGuiRadioButton("Flat Shaded", state.preview_mode, preview_mode_flat)
@@ -766,75 +805,49 @@ function sdf_scene.update(app, frame)
 
       local active_cell_changed = false
       if hg.ImGuiButton("Previous Cell") then
-        set_active_cell_index(state, state.active_cell_index - 1)
+        set_active_cell_index(state, state.active_cell_index - 1, app, "Active cell")
         active_cell_changed = true
       end
       hg.ImGuiSameLine()
       if hg.ImGuiButton("Next Cell") then
-        set_active_cell_index(state, state.active_cell_index + 1)
+        set_active_cell_index(state, state.active_cell_index + 1, app, "Active cell")
         active_cell_changed = true
       end
 
       for index = 1, #state.cells do
         local cell_state = state.cells[index]
-        local label
-        if cell_state.load_error ~= nil then
-          label = string.format("%s [load error]", cell_state.name)
-        else
-          label = string.format("%s (%d boxes)", cell_state.name, cell_state.box_count)
-          if cell_state.exceeds_world_bounds_policy then
-            label = label .. " [bounds > policy]"
-          end
-        end
-
-        if hg.ImGuiSelectable(label, index == state.active_cell_index) then
-          set_active_cell_index(state, index)
+        if hg.ImGuiSelectable(cell_state.name, index == state.active_cell_index) then
+          set_active_cell_index(state, index, app, "Active cell")
           active_cell_changed = true
-        end
-      end
-
-      active_cell = get_active_cell(state)
-      if active_cell ~= nil then
-        hg.ImGuiSeparator()
-        hg.ImGuiTextWrapped(string.format("Active Scene Path: %s", active_cell.scene_path))
-        hg.ImGuiText(string.format(
-          "Active Cell World T: %.2f, %.2f, %.2f",
-          active_cell.world_translation.x,
-          active_cell.world_translation.y,
-          active_cell.world_translation.z))
-
-        if active_cell.load_error ~= nil then
-          hg.ImGuiTextWrapped("Active cell load error:")
-          hg.ImGuiTextWrapped(active_cell.load_error)
-        elseif active_cell.scene_file ~= nil then
-          hg.ImGuiText(string.format("Active Scene: %s", active_cell.scene_file.scene.name))
-          hg.ImGuiText(string.format(
-            "Meshing Mode: %s",
-            sdf.meshing_mode_name(active_cell.scene_file.build_settings.meshing_mode)))
-          if active_cell.bounds_span ~= nil then
-            hg.ImGuiText(string.format(
-              "Scene Bounds Span: %.2f x %.2f x %.2f",
-              active_cell.bounds_span.x,
-              active_cell.bounds_span.y,
-              active_cell.bounds_span.z))
-            if active_cell.exceeds_world_bounds_policy then
-              hg.ImGuiTextWrapped(string.format(
-                "Bounds policy warning: scene bounds exceed the current world envelope (max span %.2f m). Overflow: x %.2f, y %.2f, z %.2f. Current clipping still follows this scene file's bounds.",
-                state.world_document.effective_cell_span,
-                active_cell.bounds_policy_overflow.x,
-                active_cell.bounds_policy_overflow.y,
-                active_cell.bounds_policy_overflow.z))
-            else
-              hg.ImGuiText(string.format(
-                "Bounds Policy: within %.2f m envelope",
-                state.world_document.effective_cell_span))
-            end
-          end
         end
       end
 
       if preview_mode_changed or wireframe_changed or preview_visibility_changed or inactive_visibility_changed then
         update_preview_visibility(state)
+
+        if preview_mode_changed or wireframe_changed then
+          if state.preview_mode == preview_mode_flat then
+            log_panel.info(app, "Preview mode: flat shaded")
+          else
+            log_panel.info(app, "Preview mode: wireframe")
+          end
+        end
+
+        if preview_visibility_changed then
+          if state.preview_visible then
+            log_panel.info(app, "Box preview shown")
+          else
+            log_panel.info(app, "Box preview hidden")
+          end
+        end
+
+        if inactive_visibility_changed then
+          if state.show_inactive_cells then
+            log_panel.info(app, "Inactive cells shown")
+          else
+            log_panel.info(app, "Inactive cells hidden")
+          end
+        end
       elseif active_cell_changed then
         update_preview_visibility(state)
       end

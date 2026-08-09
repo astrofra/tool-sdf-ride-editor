@@ -1,4 +1,5 @@
 local hg = require("harfang")
+local ground_plane = require("editor.ground_plane")
 
 local runtime = {}
 
@@ -10,6 +11,50 @@ local window_defaults = {
 
 local background_clear = {24, 28, 34}
 local imgui_view_id = 255
+local follow_spotlight_height = 200.0
+local follow_spotlight_radius = 450.0
+local follow_spotlight_inner_angle = hg.Deg(30)
+local follow_spotlight_outer_angle = hg.Deg(45)
+local follow_spotlight_priority = 1.0
+local follow_spotlight_shadow_bias = 0.00005
+local follow_spotlight_shadow_near = 1.0
+local follow_spotlight_shadow_far = 450.0
+local follow_spotlight_diffuse = hg.Color(1.0, 0.98, 0.94, 1.0)
+local follow_spotlight_specular = hg.Color.White
+
+local function make_follow_spotlight_position(target)
+  return hg.Vec3(target.x, target.y + follow_spotlight_height, target.z)
+end
+
+local function compute_follow_spotlight_target(app, frame)
+  if frame == nil or frame.window_width == nil or frame.window_height == nil then
+    return hg.Vec3(app.scene.origin.x, 0.0, app.scene.origin.z)
+  end
+
+  local hit_ok, hit_position = ground_plane.screen_to_ground(
+    frame,
+    frame.window_width * 0.5,
+    frame.window_height * 0.5,
+    0.0)
+  if hit_ok then
+    return hit_position
+  end
+
+  return hg.Vec3(app.scene.origin.x, 0.0, app.scene.origin.z)
+end
+
+local function update_follow_spotlight(app, frame)
+  local spotlight = app.scene.follow_spotlight
+  if spotlight == nil then
+    return
+  end
+
+  local target = compute_follow_spotlight_target(app, frame)
+  local position = make_follow_spotlight_position(target)
+
+  spotlight.target = target
+  spotlight.transform:SetWorld(hg.Mat4LookAt(position, target))
+end
 
 function runtime.create()
   hg.InputInit()
@@ -78,21 +123,27 @@ function runtime.create()
   scene:SetCurrentCamera(app.scene.camera)
   app.scene.camera_transform = app.scene.camera:GetTransform()
 
-  hg.CreatePointLight(
+  local follow_spotlight_node = hg.CreateSpotLight(
     scene,
-    hg.TranslationMat4(hg.Vec3(0, 18, 0)),
-    80,
-    hg.ColorI(255, 244, 228),
-    hg.Color.Black,
-    0)
+    hg.Mat4LookAt(
+      hg.Vec3(0.0, follow_spotlight_height, 0.0),
+      hg.Vec3(0.0, 0.0, 0.0)),
+    follow_spotlight_radius,
+    follow_spotlight_inner_angle,
+    follow_spotlight_outer_angle,
+    follow_spotlight_diffuse,
+    follow_spotlight_specular,
+    follow_spotlight_priority,
+    hg.LST_Map,
+    follow_spotlight_shadow_bias,
+    follow_spotlight_shadow_near,
+    follow_spotlight_shadow_far)
 
-  hg.CreatePointLight(
-    scene,
-    hg.TranslationMat4(hg.Vec3(-16, 10, -16)),
-    60,
-    hg.ColorI(128, 164, 255),
-    hg.Color.Black,
-    0)
+  app.scene.follow_spotlight = {
+    node = follow_spotlight_node,
+    transform = follow_spotlight_node:GetTransform(),
+    target = hg.Vec3(0.0, 0.0, 0.0)
+  }
 
   return app
 end
@@ -166,6 +217,7 @@ function runtime.prepare_camera_frame(app, frame)
 end
 
 function runtime.render_scene(app, frame)
+  update_follow_spotlight(app, frame)
   app.scene.handle:Update(frame.dt_clock)
   hg.SubmitSceneToPipeline(
     0,
@@ -174,6 +226,10 @@ function runtime.render_scene(app, frame)
     true,
     app.render.pipeline,
     app.render.resources)
+end
+
+function runtime.update_scene_lighting(app, frame)
+  update_follow_spotlight(app, frame)
 end
 
 function runtime.end_frame(app, frame)

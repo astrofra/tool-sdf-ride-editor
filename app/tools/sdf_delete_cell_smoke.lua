@@ -4,9 +4,9 @@ local sdf_world = require("editor.sdf_world")
 local sdf_scene = require("editor.sdf_scene")
 local sdf_cell_factory = require("editor.sdf_cell_factory")
 
-local world_path = "../test_output/delete_cell_world.sdfworld"
-local first_scene_path = "../test_output/tile_000.sdfscene"
-local second_scene_path = "../test_output/tile_001.sdfscene"
+local world_path = "../test_output/delete_cell/delete_cell_world.sdfworld"
+local first_scene_path = "../test_output/delete_cell/tile_000.sdfscene"
+local second_scene_path = "../test_output/delete_cell/tile_001.sdfscene"
 
 local function cleanup()
   os.remove(world_path)

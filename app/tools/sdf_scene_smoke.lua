@@ -7,6 +7,8 @@ local ok, err = xpcall(function()
   sdf_scene.attach(app)
 
   assert(app.sdf_world ~= nil, "app.sdf_world should be initialized")
+  assert(app.log_panel ~= nil, "app.log_panel should be initialized")
+  assert(#app.log_panel.entries > 0, "log panel should contain startup entries")
   assert(app.sdf_world.world_document ~= nil, app.sdf_world.load_error or "world document should be loaded")
   assert(math.abs(app.sdf_world.world_document.cell_bounds_padding - 10.0) < 0.0001, "world should expose 10m bounds padding")
   assert(math.abs(app.sdf_world.world_document.effective_cell_span - 120.0) < 0.0001, "world should expose 120m effective span")
