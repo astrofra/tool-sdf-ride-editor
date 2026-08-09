@@ -127,3 +127,11 @@ By default, a newly created cell also starts with one additive `socle` box:
 - spanning the nominal cell footprint in `X/Z`;
 - `5` meters thick;
 - with its top face aligned to local ground `Y = 0`.
+
+## Cell Lifecycle
+
+For this first world-document slice:
+
+- adding a cell creates a dedicated `.sdfscene` file and registers it in the master `.sdfworld`;
+- deleting a cell removes that world entry and should also remove the dedicated `.sdfscene` file when possible;
+- the editor must refuse deletion of the last remaining cell, because the current `.sdfworld` format requires at least one cell.

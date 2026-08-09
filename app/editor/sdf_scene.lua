@@ -93,6 +93,12 @@ local function set_preview_visibility(nodes, is_visible)
   end
 end
 
+local function destroy_preview_nodes(scene, nodes)
+  for index = 1, #nodes do
+    scene:DestroyNode(nodes[index])
+  end
+end
+
 local function append_wireframe_edge(nodes, scene, line_ref, material, position, rotation, length)
   local node = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {material})
   local transform = node:GetTransform()
@@ -206,6 +212,11 @@ local function get_active_cell(state)
   return state.cells[state.active_cell_index]
 end
 
+local function cancel_cell_placement(state)
+  state.cell_placement.active = false
+  state.cell_placement.valid = false
+end
+
 local function update_preview_visibility(state)
   local active_cell_index = state.active_cell_index
 
@@ -235,6 +246,7 @@ local function set_active_cell_index(state, new_index)
   state.active_cell_index = new_index
   state.world_document.active_cell_index = new_index
   state.world_document.active_cell_name = state.cells[new_index].name
+  state.delete_cell_confirmation_armed = false
   update_preview_visibility(state)
 end
 
@@ -382,6 +394,28 @@ local function create_cell_preview(app, state, cell_document)
   set_active_cell_index(state, #state.cells)
 end
 
+local function remove_cell_preview(app, cell_state)
+  destroy_preview_nodes(app.scene.handle, cell_state.preview_nodes.flat)
+  destroy_preview_nodes(app.scene.handle, cell_state.preview_nodes.wireframe)
+  cell_state.preview_nodes.flat = {}
+  cell_state.preview_nodes.wireframe = {}
+end
+
+local function remove_cell_state_at_index(app, state, cell_index)
+  local cell_state = table.remove(state.cells, cell_index)
+  if cell_state == nil then
+    return nil
+  end
+
+  if cell_state.scene_file ~= nil then
+    state.loaded_cell_count = state.loaded_cell_count - 1
+    state.total_box_count = state.total_box_count - cell_state.box_count
+  end
+
+  remove_cell_preview(app, cell_state)
+  return cell_state
+end
+
 local function make_world_state(path)
   local state = {
     path = path,
@@ -401,6 +435,7 @@ local function make_world_state(path)
       snapped_world_position = hg.Vec3(0.0, 0.0, 0.0),
       left_button_was_down = false
     },
+    delete_cell_confirmation_armed = false,
     materials = {},
     action_error = nil,
     status_message = nil
@@ -504,6 +539,52 @@ local function add_cell_at_position(app, state, world_position)
   return true, cell_name
 end
 
+local function delete_active_cell(app, state)
+  if state.active_cell_index == nil then
+    return false, "No active cell is selected"
+  end
+
+  if #state.cells <= 1 then
+    return false, "Cannot delete the last remaining cell"
+  end
+
+  local delete_index = state.active_cell_index
+  local deleted_cell_state = state.cells[delete_index]
+  local document = state.world_document
+  local previous_active_cell_name = document.active_cell_name
+  local replacement_active_cell_name
+
+  if delete_index < #document.cells then
+    replacement_active_cell_name = document.cells[delete_index + 1].name
+  else
+    replacement_active_cell_name = document.cells[delete_index - 1].name
+  end
+
+  local deleted_cell_document = table.remove(document.cells, delete_index)
+  document.active_cell_name = replacement_active_cell_name
+
+  local world_saved, world_save_error = sdf_world.save_world_file(state.path, document)
+  if not world_saved then
+    table.insert(document.cells, delete_index, deleted_cell_document)
+    document.active_cell_name = previous_active_cell_name
+    document.active_cell_index = delete_index
+    return false, world_save_error
+  end
+
+  remove_cell_state_at_index(app, state, delete_index)
+  set_active_cell_index(state, math.min(delete_index, #state.cells))
+  cancel_cell_placement(state)
+
+  local scene_deleted, scene_delete_error = os.remove(deleted_cell_state.scene_path)
+
+  return true, {
+    cell_name = deleted_cell_state.name,
+    scene_path = deleted_cell_state.scene_path,
+    scene_deleted = scene_deleted,
+    scene_delete_error = scene_delete_error
+  }
+end
+
 function sdf_scene.attach(app, world_path)
   local state = make_world_state(world_path or resolve_default_world_path())
   create_preview_nodes(app, state)
@@ -531,10 +612,38 @@ function sdf_scene.add_cell_at_position(app, world_position)
     world_position.x,
     world_position.y,
     world_position.z)
-  state.cell_placement.active = false
-  state.cell_placement.valid = false
+  cancel_cell_placement(state)
 
   return true, result
+end
+
+function sdf_scene.delete_active_cell(app)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  state.delete_cell_confirmation_armed = false
+
+  local ok, result = delete_active_cell(app, state)
+  if not ok then
+    state.action_error = result
+    state.status_message = nil
+    return false, result
+  end
+
+  state.action_error = nil
+  if result.scene_deleted then
+    state.status_message = string.format("Deleted cell %s", result.cell_name)
+  else
+    state.status_message = string.format(
+      "Deleted cell %s from the world, but could not remove %s (%s)",
+      result.cell_name,
+      result.scene_path,
+      tostring(result.scene_delete_error))
+  end
+
+  return true, result.cell_name
 end
 
 function sdf_scene.handle_cell_placement_confirmation(app, frame)
@@ -588,13 +697,34 @@ function sdf_scene.update(app, frame)
       hg.ImGuiSeparator()
       if not state.cell_placement.active then
         if hg.ImGuiButton("Add Cell") then
+          state.delete_cell_confirmation_armed = false
           state.cell_placement.active = true
           state.cell_placement.valid = false
         end
       else
         if hg.ImGuiButton("Cancel Add Cell") then
-          state.cell_placement.active = false
-          state.cell_placement.valid = false
+          cancel_cell_placement(state)
+        end
+      end
+
+      hg.ImGuiSameLine()
+      if not state.delete_cell_confirmation_armed then
+        if hg.ImGuiButton("Delete Active Cell") then
+          if #state.cells <= 1 then
+            state.action_error = "Cannot delete the last remaining cell"
+            state.status_message = nil
+          else
+            cancel_cell_placement(state)
+            state.delete_cell_confirmation_armed = true
+          end
+        end
+      else
+        if hg.ImGuiButton("Confirm Delete Cell") then
+          sdf_scene.delete_active_cell(app)
+        end
+        hg.ImGuiSameLine()
+        if hg.ImGuiButton("Cancel Delete") then
+          state.delete_cell_confirmation_armed = false
         end
       end
 
@@ -612,6 +742,11 @@ function sdf_scene.update(app, frame)
         else
           hg.ImGuiTextWrapped("Placement cursor is waiting for a valid ground hit in the 3D viewport.")
         end
+        hg.ImGuiSeparator()
+      elseif state.delete_cell_confirmation_armed then
+        hg.ImGuiTextWrapped(string.format(
+          "Delete %s from the world and remove its dedicated .sdfscene file.",
+          active_cell_name))
         hg.ImGuiSeparator()
       end
 
