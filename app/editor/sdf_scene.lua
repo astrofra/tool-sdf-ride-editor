@@ -134,6 +134,35 @@ local function create_wireframe_box_nodes(scene, line_ref, material, translation
   end
 end
 
+local function compute_bounds_span(bounds)
+  return {
+    x = bounds.max.x - bounds.min.x,
+    y = bounds.max.y - bounds.min.y,
+    z = bounds.max.z - bounds.min.z
+  }
+end
+
+local function compute_bounds_overflow(span, max_span)
+  return {
+    x = math.max(0.0, span.x - max_span),
+    y = math.max(0.0, span.y - max_span),
+    z = math.max(0.0, span.z - max_span)
+  }
+end
+
+local function update_cell_bounds_policy_diagnostics(state, cell_state)
+  if state.world_document == nil or cell_state.scene_file == nil then
+    return
+  end
+
+  local span = compute_bounds_span(cell_state.scene_file.build_settings.bounds)
+  local overflow = compute_bounds_overflow(span, state.world_document.effective_cell_span)
+
+  cell_state.bounds_span = span
+  cell_state.bounds_policy_overflow = overflow
+  cell_state.exceeds_world_bounds_policy = overflow.x > 0.0 or overflow.y > 0.0 or overflow.z > 0.0
+end
+
 local function get_active_cell(state)
   if state.active_cell_index == nil or state.active_cell_index < 1 or state.active_cell_index > #state.cells then
     return nil
@@ -185,6 +214,9 @@ local function make_cell_state(cell_document)
     scene_file = nil,
     load_error = nil,
     box_count = 0,
+    bounds_span = nil,
+    bounds_policy_overflow = nil,
+    exceeds_world_bounds_policy = false,
     preview_nodes = {
       flat = {},
       wireframe = {}
@@ -233,6 +265,7 @@ local function make_world_state(path)
     if cell_state.scene_file ~= nil then
       state.loaded_cell_count = state.loaded_cell_count + 1
       state.total_box_count = state.total_box_count + cell_state.box_count
+      update_cell_bounds_policy_diagnostics(state, cell_state)
     end
   end
 
@@ -317,7 +350,8 @@ function sdf_scene.update(app, frame)
     "SDF Scene",
     true,
     hg.ImGuiWindowFlags_NoMove | hg.ImGuiWindowFlags_NoResize | hg.ImGuiWindowFlags_NoCollapse) then
-    hg.ImGuiTextWrapped("Cells keep their objects in local space. The world document owns only cell placement in world space.")
+    hg.ImGuiTextWrapped(
+      "Cells keep their objects in local space. The world document owns cell placement and shared envelope metadata.")
 
     if state.load_error ~= nil then
       hg.ImGuiTextWrapped("Load error:")
@@ -330,6 +364,8 @@ function sdf_scene.update(app, frame)
       hg.ImGuiText(string.format("Cells: %d (%d loaded)", #state.cells, state.loaded_cell_count))
       hg.ImGuiText(string.format("Total Boxes: %d", state.total_box_count))
       hg.ImGuiText(string.format("Cell Size: %.2f", state.world_document.cell_size))
+      hg.ImGuiText(string.format("Cell Bounds Padding: %.2f", state.world_document.cell_bounds_padding))
+      hg.ImGuiText(string.format("Effective Bounds Span: %.2f", state.world_document.effective_cell_span))
       hg.ImGuiText(string.format("Active Cell: %s", active_cell_name))
       hg.ImGuiTextWrapped(string.format("World Path: %s", state.path))
       hg.ImGuiSeparator()
@@ -365,6 +401,9 @@ function sdf_scene.update(app, frame)
           label = string.format("%s [load error]", cell_state.name)
         else
           label = string.format("%s (%d boxes)", cell_state.name, cell_state.box_count)
+          if cell_state.exceeds_world_bounds_policy then
+            label = label .. " [bounds > policy]"
+          end
         end
 
         if hg.ImGuiSelectable(label, index == state.active_cell_index) then
@@ -391,6 +430,25 @@ function sdf_scene.update(app, frame)
           hg.ImGuiText(string.format(
             "Meshing Mode: %s",
             sdf.meshing_mode_name(active_cell.scene_file.build_settings.meshing_mode)))
+          if active_cell.bounds_span ~= nil then
+            hg.ImGuiText(string.format(
+              "Scene Bounds Span: %.2f x %.2f x %.2f",
+              active_cell.bounds_span.x,
+              active_cell.bounds_span.y,
+              active_cell.bounds_span.z))
+            if active_cell.exceeds_world_bounds_policy then
+              hg.ImGuiTextWrapped(string.format(
+                "Bounds policy warning: scene bounds exceed the current world envelope (max span %.2f m). Overflow: x %.2f, y %.2f, z %.2f. Current clipping still follows this scene file's bounds.",
+                state.world_document.effective_cell_span,
+                active_cell.bounds_policy_overflow.x,
+                active_cell.bounds_policy_overflow.y,
+                active_cell.bounds_policy_overflow.z))
+            else
+              hg.ImGuiText(string.format(
+                "Bounds Policy: within %.2f m envelope",
+                state.world_document.effective_cell_span))
+            end
+          end
         end
       end
 

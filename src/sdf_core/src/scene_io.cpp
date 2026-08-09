@@ -520,15 +520,6 @@ bool load_scene_file(
     return false;
   }
 
-  if (parsed_file.scene.boxes.empty())
-  {
-    if (error_message != nullptr)
-    {
-      *error_message = "scene file does not define any boxes: " + input_path.string();
-    }
-    return false;
-  }
-
   if (!validate_modifier_targets(parsed_file.scene, input_path, error_message))
   {
     return false;
@@ -548,15 +539,6 @@ bool save_scene_file(
     if (error_message != nullptr)
     {
       *error_message = "scene file save requires a non-empty scene name";
-    }
-    return false;
-  }
-
-  if (scene_file.scene.boxes.empty())
-  {
-    if (error_message != nullptr)
-    {
-      *error_message = "scene file save requires at least one box";
     }
     return false;
   }

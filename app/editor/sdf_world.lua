@@ -49,6 +49,8 @@ function sdf_world.load_world_file(path)
   local document = {
     name = nil,
     cell_size = nil,
+    cell_bounds_padding = nil,
+    effective_cell_span = nil,
     active_cell_name = nil,
     active_cell_index = nil,
     cells = {}
@@ -82,6 +84,29 @@ function sdf_world.load_world_file(path)
         end
 
         document.cell_size = cell_size
+      elseif keyword == "cell_bounds_padding" then
+        if #tokens ~= 2 then
+          handle:close()
+          return false, nil, string.format("Expected 'cell_bounds_padding <value>' on line %d", line_number)
+        end
+
+        local cell_bounds_padding, cell_bounds_padding_error = parse_required_number(
+          tokens[2],
+          line_number,
+          "cell_bounds_padding")
+        if cell_bounds_padding == nil then
+          handle:close()
+          return false, nil, cell_bounds_padding_error
+        end
+
+        if cell_bounds_padding < 0.0 then
+          handle:close()
+          return false, nil, string.format(
+            "cell_bounds_padding must be non-negative on line %d",
+            line_number)
+        end
+
+        document.cell_bounds_padding = cell_bounds_padding
       elseif keyword == "active_cell" then
         if #tokens ~= 2 then
           handle:close()
@@ -145,6 +170,10 @@ function sdf_world.load_world_file(path)
   if document.cell_size == nil or document.cell_size <= 0.0 then
     return false, nil, string.format("World document is missing a valid 'cell_size': %s", path)
   end
+  if document.cell_bounds_padding == nil then
+    document.cell_bounds_padding = document.cell_size * 0.1
+  end
+  document.effective_cell_span = document.cell_size + document.cell_bounds_padding * 2.0
   if #document.cells == 0 then
     return false, nil, string.format("World document does not define any cells: %s", path)
   end
