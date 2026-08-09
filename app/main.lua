@@ -17,7 +17,6 @@ local function run_app(app)
       gizmos.update(app, frame)
 
       runtime.render_scene(app, frame)
-      gizmos.draw(app, frame)
     end
 
     runtime.end_frame(app, frame)

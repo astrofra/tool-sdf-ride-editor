@@ -9,7 +9,6 @@ local window_defaults = {
 }
 
 local background_clear = {24, 28, 34}
-local label_view_id = 254
 local imgui_view_id = 255
 
 function runtime.create()
@@ -35,10 +34,6 @@ function runtime.create()
     "core/shader/default.hps",
     resources,
     hg.GetForwardPipelineInfo())
-  local font = hg.LoadFontFromAssets("fonts/spacemono-regular.ttf", 40)
-  local font_program = hg.LoadProgramFromAssets("core/shader/font")
-  local text_uniform_values = {hg.MakeUniformSetValue("u_color", hg.Vec4(0.92, 0.92, 0.95, 1.0))}
-  local text_render_state = hg.ComputeRenderState(hg.BM_Alpha, hg.DT_LessEqual, hg.FC_Disabled, false)
   local line_model = hg.CreateCubeModel(hg.VertexLayoutPosFloatNormUInt8(), 1, 1, 1)
   local line_ref = resources:AddModel("editor_line_unit", line_model)
 
@@ -58,13 +53,8 @@ function runtime.create()
       pipeline = pipeline,
       resources = resources,
       shader_ref = shader_ref,
-      font = font,
-      font_program = font_program,
-      text_uniform_values = text_uniform_values,
-      text_render_state = text_render_state,
       line_ref = line_ref,
       view_ids = {
-        label = label_view_id,
         imgui = imgui_view_id
       }
     },
