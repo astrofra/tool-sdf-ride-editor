@@ -9,7 +9,8 @@ local ok, err = xpcall(function()
   assert(app.sdf ~= nil, "app.sdf should be initialized")
   assert(app.sdf.scene_file ~= nil, app.sdf.load_error or "scene file should be loaded")
   assert(app.sdf.box_count > 0, "scene should contain at least one box")
-  assert(#app.sdf.preview_nodes == app.sdf.box_count, "preview node count should match box count")
+  assert(#app.sdf.preview_nodes.flat == app.sdf.box_count, "flat preview node count should match box count")
+  assert(#app.sdf.preview_nodes.wireframe == app.sdf.box_count * 12, "wireframe preview node count should expose 12 edges per box")
 
   print(string.format(
     "sdf scene smoke test passed (%s, %d boxes)",
