@@ -56,6 +56,12 @@ The master world document owns:
 - the active cell selection;
 - world-level authoring metadata such as shared cell size.
 
+For the current editor prototype, the default shared cell size is **100.0 meters**.
+
+At this stage, that `cell_size` value is a world-layout and editor convention.
+It does **not** yet clip or crop generated geometry by itself.
+Actual SDF mesh generation is still bounded by each cell scene's own `.sdfscene` `bounds`.
+
 ## Initial File Format
 
 The first world document format is a simple line-based text file:
@@ -71,7 +77,7 @@ Example:
 
 ```text
 world default_blockout_world
-cell_size 64.0
+cell_size 100.0
 active_cell tile_000
 cell tile_000 sdf-scenes/tile_000.sdfscene 0 0 0
 ```
