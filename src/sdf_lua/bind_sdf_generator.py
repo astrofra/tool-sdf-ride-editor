@@ -42,22 +42,22 @@ def bind(gen):
         ['MarchingTetrahedra', 'DualContouring', 'AdaptiveDualContouring'],
         prefix='MeshingMode')
 
-    vec2 = gen.begin_class('sdf::Vec2', bound_name='Vec2')
+    vec2 = gen.begin_class('sdf::Vec2', bound_name='SdfVec2')
     gen.bind_constructor(vec2, [])
     gen.bind_members(vec2, ['float x', 'float y'])
     gen.end_class(vec2)
 
-    vec3 = gen.begin_class('sdf::Vec3', bound_name='Vec3')
+    vec3 = gen.begin_class('sdf::Vec3', bound_name='SdfVec3')
     gen.bind_constructor(vec3, [])
     gen.bind_members(vec3, ['float x', 'float y', 'float z'])
     gen.end_class(vec3)
 
-    aabb = gen.begin_class('sdf::Aabb', bound_name='Aabb')
+    aabb = gen.begin_class('sdf::Aabb', bound_name='SdfAabb')
     gen.bind_constructor(aabb, [])
     gen.bind_members(aabb, ['sdf::Vec3 min', 'sdf::Vec3 max'])
     gen.end_class(aabb)
 
-    transform = gen.begin_class('sdf::Transform', bound_name='Transform')
+    transform = gen.begin_class('sdf::Transform', bound_name='SdfTransform')
     gen.bind_constructor(transform, [])
     gen.bind_members(transform, ['sdf::Vec3 translation'])
     gen.end_class(transform)
