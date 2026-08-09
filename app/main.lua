@@ -519,140 +519,143 @@ while hg.IsWindowOpen(window) do
   local render_was_reset
   render_was_reset, window_width, window_height = hg.RenderResetToWindow(window, window_width, window_height, render_flags)
 
-  local mouse_state = hg.ReadMouse()
-  local keyboard_state = hg.ReadKeyboard()
-  if keyboard_state:Key(hg.K_Escape) then
-    break
-  end
-
-  local dt_clock = hg.TickClock()
-  local dt = hg.time_to_sec_f(dt_clock)
-
-  hg.ImGuiBeginFrame(window_width, window_height, dt_clock, mouse_state, keyboard_state)
-
-  hg.ImGuiSetNextWindowPos(hg.Vec2(24, window_height - 104))
-  hg.ImGuiSetNextWindowSize(hg.Vec2(360, 0))
-
-  local slider_is_active = false
-  if hg.ImGuiBegin(
-    "Camera Transport",
-    true,
-    hg.ImGuiWindowFlags_NoMove | hg.ImGuiWindowFlags_NoResize | hg.ImGuiWindowFlags_NoCollapse) then
-    hg.ImGuiTextWrapped("Push left to move backward on world Z, right to move forward. Releasing recenters the control.")
-    _, camera_drive = hg.ImGuiSliderFloat("Z Drive", camera_drive, -1.0, 1.0, "%.2f")
-    slider_is_active = hg.ImGuiIsItemActive()
-  end
-  hg.ImGuiEnd()
-
-  if not slider_is_active then
-    camera_drive = smooth_towards(camera_drive, 0.0, slider_return_speed, dt)
-    if math.abs(camera_drive) < 0.001 then
-      camera_drive = 0.0
+  if window_width > 0 and window_height > 0 then
+    local mouse_state = hg.ReadMouse()
+    local keyboard_state = hg.ReadKeyboard()
+    if keyboard_state:Key(hg.K_Escape) then
+      break
     end
-  end
 
-  local target_z_velocity = camera_drive * camera_translation_speed
-  camera_z_velocity = smooth_towards(camera_z_velocity, target_z_velocity, camera_velocity_response, dt)
-  if math.abs(camera_z_velocity) < 0.001 and math.abs(camera_drive) < 0.001 then
-    camera_z_velocity = 0.0
-  end
+    local dt_clock = hg.TickClock()
+    local dt = hg.time_to_sec_f(dt_clock)
 
-  camera_position.z = camera_position.z + camera_z_velocity * dt
-  camera_transform:SetPos(camera_position)
+    hg.ImGuiBeginFrame(window_width, window_height, dt_clock, mouse_state, keyboard_state)
 
-  local camera_world = camera_transform:GetWorld()
-  local camera_forward = hg.Normalize(hg.GetZ(camera_world))
-  local camera_component = camera:GetCamera()
-  local view_matrix = hg.InverseFast(camera_world)
-  local projection_matrix = hg.ComputePerspectiveProjectionMatrix(
-    camera_component:GetZNear(),
-    camera_component:GetZFar(),
-    hg.FovToZoomFactor(camera_component:GetFov()),
-    hg.ComputeAspectRatioX(window_width, window_height))
-  local inverse_projection_matrix
-  local inverse_projection_ok
-  inverse_projection_matrix, inverse_projection_ok = hg.Inverse(projection_matrix)
-  grid_center = snap_grid_center(intersect_ground_plane(hg.GetT(camera_world), camera_forward, grid_center))
-  update_grid_nodes(grid_x_nodes, grid_z_nodes, grid_center)
-  local measurement_start_world = hg.Vec3(grid_center.x, measurement_height, grid_center.z)
-  local measurement_end_world = hg.Vec3(scene_origin.x, measurement_height, scene_origin.z)
-  local measurement_distance = hg.Len(measurement_end_world - measurement_start_world)
-  local label_text = string.format("%.0fm", measurement_distance)
-  local label_rect = hg.ComputeTextRect(font, label_text)
-  local label_width_world = (label_rect.ex - label_rect.sx) * measurement_label_scale
-  local label_height_world = math.abs(label_rect.ey - label_rect.sy) * measurement_label_scale
-  local backdrop_width_world = label_width_world + measurement_backdrop_padding_x * 2
-  local backdrop_depth_world = label_height_world + measurement_backdrop_padding_z * 2
-  local label_gap_half_length = math.min(
-    measurement_distance * 0.45,
-    backdrop_width_world * 0.5 + measurement_label_gap_padding)
-  local label_visible = false
-  local label_anchor_distance = measurement_distance * 0.5
-  local visible_start_distance = 0.0
-  local visible_end_distance = 0.0
-  if inverse_projection_ok then
-    label_visible, visible_start_distance, visible_end_distance = compute_visible_measurement_segment(
-      projection_matrix,
-      inverse_projection_matrix,
-      view_matrix,
-      camera_world,
-      hg.Vec2(window_width, window_height),
-      measurement_start_world,
-      measurement_end_world)
-  end
-  if label_visible then
-    local visible_segment_length = visible_end_distance - visible_start_distance
-    local required_visible_length = backdrop_width_world + measurement_label_gap_padding * 2
-    label_visible = visible_segment_length >= required_visible_length
-    label_anchor_distance = (visible_start_distance + visible_end_distance) * 0.5
-  end
-  update_measurement_nodes(
-    measurement_nodes,
-    measurement_start_world,
-    measurement_end_world,
-    label_visible and label_anchor_distance or nil,
-    label_visible and label_gap_half_length or 0.0)
-  local label_matrix
-  if label_visible then
-    local label_anchor_world
-    local label_line_yaw
-    label_matrix, label_anchor_world, label_line_yaw = compute_measurement_label_transform(
+    hg.ImGuiSetNextWindowPos(hg.Vec2(24, window_height - 104))
+    hg.ImGuiSetNextWindowSize(hg.Vec2(360, 0))
+
+    local slider_is_active = false
+    if hg.ImGuiBegin(
+      "Camera Transport",
+      true,
+      hg.ImGuiWindowFlags_NoMove | hg.ImGuiWindowFlags_NoResize | hg.ImGuiWindowFlags_NoCollapse) then
+      hg.ImGuiTextWrapped("Push left to move backward on world Z, right to move forward. Releasing recenters the control.")
+      _, camera_drive = hg.ImGuiSliderFloat("Z Drive", camera_drive, -1.0, 1.0, "%.2f")
+      slider_is_active = hg.ImGuiIsItemActive()
+    end
+    hg.ImGuiEnd()
+
+    if not slider_is_active then
+      camera_drive = smooth_towards(camera_drive, 0.0, slider_return_speed, dt)
+      if math.abs(camera_drive) < 0.001 then
+        camera_drive = 0.0
+      end
+    end
+
+    local target_z_velocity = camera_drive * camera_translation_speed
+    camera_z_velocity = smooth_towards(camera_z_velocity, target_z_velocity, camera_velocity_response, dt)
+    if math.abs(camera_z_velocity) < 0.001 and math.abs(camera_drive) < 0.001 then
+      camera_z_velocity = 0.0
+    end
+
+    camera_position.z = camera_position.z + camera_z_velocity * dt
+    camera_transform:SetPos(camera_position)
+
+    local camera_world = camera_transform:GetWorld()
+    local camera_forward = hg.Normalize(hg.GetZ(camera_world))
+    local camera_component = camera:GetCamera()
+    local view_matrix = hg.InverseFast(camera_world)
+    local projection_matrix = hg.ComputePerspectiveProjectionMatrix(
+      camera_component:GetZNear(),
+      camera_component:GetZFar(),
+      hg.FovToZoomFactor(camera_component:GetFov()),
+      hg.ComputeAspectRatioX(window_width, window_height))
+    local inverse_projection_matrix
+    local inverse_projection_ok
+    inverse_projection_matrix, inverse_projection_ok = hg.Inverse(projection_matrix)
+    grid_center = snap_grid_center(intersect_ground_plane(hg.GetT(camera_world), camera_forward, grid_center))
+    update_grid_nodes(grid_x_nodes, grid_z_nodes, grid_center)
+    local measurement_start_world = hg.Vec3(grid_center.x, measurement_height, grid_center.z)
+    local measurement_end_world = hg.Vec3(scene_origin.x, measurement_height, scene_origin.z)
+    local measurement_distance = hg.Len(measurement_end_world - measurement_start_world)
+    local label_text = string.format("%.0fm", measurement_distance)
+    local label_rect = hg.ComputeTextRect(font, label_text)
+    local label_width_world = (label_rect.ex - label_rect.sx) * measurement_label_scale
+    local label_height_world = math.abs(label_rect.ey - label_rect.sy) * measurement_label_scale
+    local backdrop_width_world = label_width_world + measurement_backdrop_padding_x * 2
+    local backdrop_depth_world = label_height_world + measurement_backdrop_padding_z * 2
+    local label_gap_half_length = math.min(
+      measurement_distance * 0.45,
+      backdrop_width_world * 0.5 + measurement_label_gap_padding)
+    local label_visible = false
+    local label_anchor_distance = measurement_distance * 0.5
+    local visible_start_distance = 0.0
+    local visible_end_distance = 0.0
+    if inverse_projection_ok then
+      label_visible, visible_start_distance, visible_end_distance = compute_visible_measurement_segment(
+        projection_matrix,
+        inverse_projection_matrix,
+        view_matrix,
+        camera_world,
+        hg.Vec2(window_width, window_height),
+        measurement_start_world,
+        measurement_end_world)
+    end
+    if label_visible then
+      local visible_segment_length = visible_end_distance - visible_start_distance
+      local required_visible_length = backdrop_width_world + measurement_label_gap_padding * 2
+      label_visible = visible_segment_length >= required_visible_length
+      label_anchor_distance = (visible_start_distance + visible_end_distance) * 0.5
+    end
+    update_measurement_nodes(
+      measurement_nodes,
       measurement_start_world,
       measurement_end_world,
-      label_anchor_distance)
-    update_measurement_backdrop_node(
-      measurement_nodes.backdrop,
-      label_anchor_world,
-      label_line_yaw,
-      backdrop_width_world,
-      backdrop_depth_world,
-      true)
-  else
-    update_measurement_backdrop_node(measurement_nodes.backdrop, nil, 0.0, 0.0, 0.0, false)
-  end
+      label_visible and label_anchor_distance or nil,
+      label_visible and label_gap_half_length or 0.0)
+    local label_matrix
+    if label_visible then
+      local label_anchor_world
+      local label_line_yaw
+      label_matrix, label_anchor_world, label_line_yaw = compute_measurement_label_transform(
+        measurement_start_world,
+        measurement_end_world,
+        label_anchor_distance)
+      update_measurement_backdrop_node(
+        measurement_nodes.backdrop,
+        label_anchor_world,
+        label_line_yaw,
+        backdrop_width_world,
+        backdrop_depth_world,
+        true)
+    else
+      update_measurement_backdrop_node(measurement_nodes.backdrop, nil, 0.0, 0.0, 0.0, false)
+    end
 
-  scene:Update(dt_clock)
-  hg.SubmitSceneToPipeline(0, scene, hg.IntRect(0, 0, window_width, window_height), true, pipeline, resources)
-  hg.SetViewRect(label_view_id, 0, 0, window_width, window_height)
-  hg.SetViewClear(label_view_id, 0)
-  hg.SetViewTransform(label_view_id, view_matrix, projection_matrix)
-  if label_visible then
-    hg.DrawText(
-      label_view_id,
-      font,
-      label_text,
-      font_program,
-      "u_tex",
-      0,
-      label_matrix,
-      hg.Vec3(0, 0, 0),
-      hg.DTHA_Center,
-      hg.DTVA_Center,
-      text_uniform_values,
-      {},
-      text_render_state)
+    scene:Update(dt_clock)
+    hg.SubmitSceneToPipeline(0, scene, hg.IntRect(0, 0, window_width, window_height), true, pipeline, resources)
+    hg.SetViewRect(label_view_id, 0, 0, window_width, window_height)
+    hg.SetViewClear(label_view_id, 0)
+    hg.SetViewTransform(label_view_id, view_matrix, projection_matrix)
+    if label_visible then
+      hg.DrawText(
+        label_view_id,
+        font,
+        label_text,
+        font_program,
+        "u_tex",
+        0,
+        label_matrix,
+        hg.Vec3(0, 0, 0),
+        hg.DTHA_Center,
+        hg.DTVA_Center,
+        text_uniform_values,
+        {},
+        text_render_state)
+    end
+    hg.SetView2D(imgui_view_id, 0, 0, window_width, window_height, -1, 0, 0, hg.Color.Black, 1, 0)
+    hg.ImGuiEndFrame(imgui_view_id)
   end
-  hg.ImGuiEndFrame(imgui_view_id)
 
   hg.Frame()
   hg.UpdateWindow(window)
