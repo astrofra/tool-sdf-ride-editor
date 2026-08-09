@@ -19,5 +19,9 @@ bool load_scene_file(
   SceneFile *out_scene_file,
   std::string *error_message = nullptr);
 
-}  // namespace sdf
+bool save_scene_file(
+  const SceneFile &scene_file,
+  const std::filesystem::path &output_path,
+  std::string *error_message = nullptr);
 
+}  // namespace sdf

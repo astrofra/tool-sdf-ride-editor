@@ -9,7 +9,7 @@ if errorlevel 1 goto :fail
 if not exist "%~dp0artifacts\generated" mkdir "%~dp0artifacts\generated"
 
 "%~dp0build\vs2022-debug\bin\Debug\sdf_cli.exe" ^
-  --scene "%~dp0scenes\frame_006_blockout.sdfscene" ^
+  --scene "%~dp0app\sdf-scenes\frame_006_blockout.sdfscene" ^
   --out "%~dp0artifacts\generated\frame_006_blockout_adaptive_unwrapped.obj" ^
   --meshing-mode adaptive_dual_contouring ^
   --adaptive-normal-dot-threshold 0.9925 ^

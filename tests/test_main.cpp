@@ -35,7 +35,54 @@ void expect_true(bool condition, const std::string &message)
 
 std::filesystem::path sample_scene_path()
 {
-  return std::filesystem::path(SDF_PROJECT_SOURCE_DIR) / "scenes" / "frame_006_blockout.sdfscene";
+  return std::filesystem::path(SDF_PROJECT_SOURCE_DIR) / "app" / "sdf-scenes" / "frame_006_blockout.sdfscene";
+}
+
+void expect_same_noise_modifier(
+  const sdf::NoiseDisplaceMaskedModifier &lhs,
+  const sdf::NoiseDisplaceMaskedModifier &rhs);
+void expect_same_box_cut_modifier(const sdf::BoxCutModifier &lhs, const sdf::BoxCutModifier &rhs);
+void expect_same_box(const sdf::SdfBox &lhs, const sdf::SdfBox &rhs);
+
+void expect_same_scene_file(const sdf::SceneFile &lhs, const sdf::SceneFile &rhs)
+{
+  expect_true(lhs.scene.name == rhs.scene.name, "scene names should match");
+  expect_true(lhs.scene.boxes.size() == rhs.scene.boxes.size(), "scene box counts should match");
+  expect_true(lhs.scene.noise_modifiers.size() == rhs.scene.noise_modifiers.size(), "noise modifier counts should match");
+  expect_true(lhs.scene.box_cut_modifiers.size() == rhs.scene.box_cut_modifiers.size(), "box_cut modifier counts should match");
+
+  expect_true(lhs.build_settings.bounds.min.x == rhs.build_settings.bounds.min.x, "scene bounds min x should match");
+  expect_true(lhs.build_settings.bounds.min.y == rhs.build_settings.bounds.min.y, "scene bounds min y should match");
+  expect_true(lhs.build_settings.bounds.min.z == rhs.build_settings.bounds.min.z, "scene bounds min z should match");
+  expect_true(lhs.build_settings.bounds.max.x == rhs.build_settings.bounds.max.x, "scene bounds max x should match");
+  expect_true(lhs.build_settings.bounds.max.y == rhs.build_settings.bounds.max.y, "scene bounds max y should match");
+  expect_true(lhs.build_settings.bounds.max.z == rhs.build_settings.bounds.max.z, "scene bounds max z should match");
+  expect_true(lhs.build_settings.cell_size == rhs.build_settings.cell_size, "scene cell sizes should match");
+  expect_true(lhs.build_settings.meshing_mode == rhs.build_settings.meshing_mode, "scene meshing modes should match");
+  expect_true(
+    lhs.build_settings.adaptive_normal_dot_threshold == rhs.build_settings.adaptive_normal_dot_threshold,
+    "adaptive normal dot thresholds should match");
+  expect_true(
+    lhs.build_settings.adaptive_plane_error_ratio == rhs.build_settings.adaptive_plane_error_ratio,
+    "adaptive plane error ratios should match");
+  expect_true(
+    lhs.build_settings.adaptive_min_plane_error_in_cells == rhs.build_settings.adaptive_min_plane_error_in_cells,
+    "adaptive min plane error thresholds should match");
+
+  for (std::size_t index = 0; index < lhs.scene.boxes.size(); ++index)
+  {
+    expect_same_box(lhs.scene.boxes[index], rhs.scene.boxes[index]);
+  }
+
+  for (std::size_t index = 0; index < lhs.scene.noise_modifiers.size(); ++index)
+  {
+    expect_same_noise_modifier(lhs.scene.noise_modifiers[index], rhs.scene.noise_modifiers[index]);
+  }
+
+  for (std::size_t index = 0; index < lhs.scene.box_cut_modifiers.size(); ++index)
+  {
+    expect_same_box_cut_modifier(lhs.scene.box_cut_modifiers[index], rhs.scene.box_cut_modifiers[index]);
+  }
 }
 
 void expect_same_noise_modifier(
@@ -115,6 +162,25 @@ void test_frame_scene_layout()
   {
     expect_same_box_cut_modifier(scene_file.scene.box_cut_modifiers[index], expected_scene.box_cut_modifiers[index]);
   }
+}
+
+void test_scene_roundtrip_save_and_reload()
+{
+  sdf::SceneFile scene_file;
+  std::string error_message;
+  const bool load_ok = sdf::load_scene_file(sample_scene_path(), &scene_file, &error_message);
+  expect_true(load_ok, "sample scene file should load before roundtrip save");
+
+  const std::filesystem::path output_path = std::filesystem::current_path() / "test_output" / "frame_006_roundtrip.sdfscene";
+  const bool save_ok = sdf::save_scene_file(scene_file, output_path, &error_message);
+  expect_true(save_ok, "scene file roundtrip save should succeed");
+  expect_true(std::filesystem::exists(output_path), "scene roundtrip save should create a file");
+
+  sdf::SceneFile reloaded_scene_file;
+  const bool reload_ok = sdf::load_scene_file(output_path, &reloaded_scene_file, &error_message);
+  expect_true(reload_ok, "scene file saved by save_scene_file should reload");
+
+  expect_same_scene_file(scene_file, reloaded_scene_file);
 }
 
 void test_csg_opening_flips_the_sign()
@@ -949,6 +1015,7 @@ int main()
   try
   {
     test_frame_scene_layout();
+    test_scene_roundtrip_save_and_reload();
     test_csg_opening_flips_the_sign();
     test_noise_modifier_changes_surface_distance();
     test_mesh_generation_produces_triangles();

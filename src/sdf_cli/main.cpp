@@ -29,7 +29,7 @@ namespace
 
 std::filesystem::path default_scene_path()
 {
-  return std::filesystem::path(SDF_PROJECT_SOURCE_DIR) / "scenes" / "frame_006_blockout.sdfscene";
+  return std::filesystem::path(SDF_PROJECT_SOURCE_DIR) / "app" / "sdf-scenes" / "frame_006_blockout.sdfscene";
 }
 
 bool parse_debug_mode(const std::string &text, sdf::DebugRenderMode *mode)

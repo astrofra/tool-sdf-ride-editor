@@ -1,6 +1,11 @@
 /build/
 /artifacts/generated/
+/artifacts/fabgen_probe/
 /app/assets_compiled/
+/app/sdf-generator.dll
+/artifacts/generated/_post_bind_probe.obj
+/test_output/frame_006_roundtrip.sdfscene
+/test_output/frame_006_surface_pack.png
 
 *.DS_Store
 *.pyc
