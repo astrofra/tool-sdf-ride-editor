@@ -8,20 +8,17 @@ local function run_app(app)
     if frame.exit_requested then
       break
     end
-    if frame.skip_frame then
-      runtime.end_frame(app, frame)
-      goto continue
+
+    if not frame.skip_frame then
+      camera_transport.update(app, frame)
+      runtime.prepare_camera_frame(app, frame)
+      gizmos.update(app, frame)
+
+      runtime.render_scene(app, frame)
+      gizmos.draw(app, frame)
     end
 
-    camera_transport.update(app, frame)
-    runtime.prepare_camera_frame(app, frame)
-    gizmos.update(app, frame)
-
-    runtime.render_scene(app, frame)
-    gizmos.draw(app, frame)
     runtime.end_frame(app, frame)
-
-    ::continue::
   end
 end
 
