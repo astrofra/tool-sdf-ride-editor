@@ -1,11 +1,11 @@
 local hg = require("harfang")
 local sdf = require("sdf-generator")
+local sdf_world = require("editor.sdf_world")
 
 local sdf_scene = {}
 
-local default_scene_path_candidates = {
-  "sdf-scenes/frame_006_blockout.sdfscene",
-  "sdf-scenes/tile_000.sdfscene"
+local default_world_path_candidates = {
+  "sdf-worlds/default.sdfworld"
 }
 local preview_mode_flat = 0
 local preview_mode_wireframe = 1
@@ -23,15 +23,15 @@ local function file_exists(path)
   return true
 end
 
-local function resolve_default_scene_path()
-  for index = 1, #default_scene_path_candidates do
-    local candidate = default_scene_path_candidates[index]
+local function resolve_default_world_path()
+  for index = 1, #default_world_path_candidates do
+    local candidate = default_world_path_candidates[index]
     if file_exists(candidate) then
       return candidate
     end
   end
 
-  return default_scene_path_candidates[1]
+  return default_world_path_candidates[1]
 end
 
 local function shader_color_channel_from_byte(value, gamma)
@@ -63,32 +63,6 @@ local function create_wireframe_material(app, rgb)
   return material
 end
 
-local function make_scene_file_state(path)
-  local state = {
-    path = path,
-    scene_file = nil,
-    load_error = nil,
-    preview_visible = true,
-    preview_mode = preview_mode_flat,
-    preview_nodes = {
-      flat = {},
-      wireframe = {}
-    },
-    materials = {},
-    box_count = 0
-  }
-
-  local ok, scene_file, error_message = sdf.load_scene_file(path)
-  if not ok then
-    state.load_error = error_message
-    return state
-  end
-
-  state.scene_file = scene_file
-  state.box_count = #scene_file.scene.boxes
-  return state
-end
-
 local function set_preview_visibility(nodes, is_visible)
   for index = 1, #nodes do
     if is_visible then
@@ -97,18 +71,6 @@ local function set_preview_visibility(nodes, is_visible)
       nodes[index]:Disable()
     end
   end
-end
-
-local function update_preview_visibility(state)
-  if not state.preview_visible then
-    set_preview_visibility(state.preview_nodes.flat, false)
-    set_preview_visibility(state.preview_nodes.wireframe, false)
-    return
-  end
-
-  local show_flat = state.preview_mode == preview_mode_flat
-  set_preview_visibility(state.preview_nodes.flat, show_flat)
-  set_preview_visibility(state.preview_nodes.wireframe, not show_flat)
 end
 
 local function append_wireframe_edge(nodes, scene, line_ref, material, position, rotation, length)
@@ -172,18 +134,118 @@ local function create_wireframe_box_nodes(scene, line_ref, material, translation
   end
 end
 
-local function create_preview_nodes(app, state)
-  if state.scene_file == nil then
+local function get_active_cell(state)
+  if state.active_cell_index == nil or state.active_cell_index < 1 or state.active_cell_index > #state.cells then
+    return nil
+  end
+
+  return state.cells[state.active_cell_index]
+end
+
+local function update_preview_visibility(state)
+  local active_cell_index = state.active_cell_index
+
+  for index = 1, #state.cells do
+    local cell_state = state.cells[index]
+    local is_visible = state.preview_visible and (state.show_inactive_cells or index == active_cell_index)
+    local show_flat = is_visible and state.preview_mode == preview_mode_flat
+
+    set_preview_visibility(cell_state.preview_nodes.flat, show_flat)
+    set_preview_visibility(cell_state.preview_nodes.wireframe, is_visible and not show_flat)
+  end
+end
+
+local function set_active_cell_index(state, new_index)
+  local cell_count = #state.cells
+  if cell_count == 0 then
+    state.active_cell_index = nil
     return
   end
 
-  state.materials.flat_add_box = create_material(app, add_box_color)
-  state.materials.flat_subtract_box = create_material(app, subtract_box_color)
-  state.materials.wireframe_add_box = create_wireframe_material(app, add_box_color)
-  state.materials.wireframe_subtract_box = create_wireframe_material(app, subtract_box_color)
+  if new_index < 1 then
+    new_index = cell_count
+  elseif new_index > cell_count then
+    new_index = 1
+  end
+
+  state.active_cell_index = new_index
+  state.world_document.active_cell_index = new_index
+  state.world_document.active_cell_name = state.cells[new_index].name
+  update_preview_visibility(state)
+end
+
+local function make_cell_state(cell_document)
+  local cell_state = {
+    name = cell_document.name,
+    scene_path = cell_document.scene_path,
+    world_translation = hg.Vec3(
+      cell_document.world_translation.x,
+      cell_document.world_translation.y,
+      cell_document.world_translation.z),
+    scene_file = nil,
+    load_error = nil,
+    box_count = 0,
+    preview_nodes = {
+      flat = {},
+      wireframe = {}
+    }
+  }
+
+  local ok, scene_file, error_message = sdf.load_scene_file(cell_state.scene_path)
+  if not ok then
+    cell_state.load_error = error_message
+    return cell_state
+  end
+
+  cell_state.scene_file = scene_file
+  cell_state.box_count = #scene_file.scene.boxes
+  return cell_state
+end
+
+local function make_world_state(path)
+  local state = {
+    path = path,
+    world_document = nil,
+    load_error = nil,
+    preview_visible = true,
+    preview_mode = preview_mode_flat,
+    show_inactive_cells = true,
+    active_cell_index = nil,
+    cells = {},
+    total_box_count = 0,
+    loaded_cell_count = 0,
+    materials = {}
+  }
+
+  local ok, world_document, error_message = sdf_world.load_world_file(path)
+  if not ok then
+    state.load_error = error_message
+    return state
+  end
+
+  state.world_document = world_document
+  state.active_cell_index = world_document.active_cell_index
+
+  for index = 1, #world_document.cells do
+    local cell_state = make_cell_state(world_document.cells[index])
+    state.cells[#state.cells + 1] = cell_state
+
+    if cell_state.scene_file ~= nil then
+      state.loaded_cell_count = state.loaded_cell_count + 1
+      state.total_box_count = state.total_box_count + cell_state.box_count
+    end
+  end
+
+  return state
+end
+
+local function create_preview_nodes_for_cell(app, state, cell_state)
+  if cell_state.scene_file == nil then
+    return
+  end
 
   local scene = app.scene.handle
-  local boxes = state.scene_file.scene.boxes
+  local boxes = cell_state.scene_file.scene.boxes
   for index = 1, #boxes do
     local box = boxes[index]
     local is_subtractive = box.op == sdf.CsgOpSubtract
@@ -192,9 +254,9 @@ local function create_preview_nodes(app, state)
     local node = hg.CreateObject(scene, hg.Mat4.Identity, app.render.line_ref, {flat_material})
     local transform = node:GetTransform()
     local translation = hg.Vec3(
-      box.transform.translation.x,
-      box.transform.translation.y,
-      box.transform.translation.z)
+      cell_state.world_translation.x + box.transform.translation.x,
+      cell_state.world_translation.y + box.transform.translation.y,
+      cell_state.world_translation.z + box.transform.translation.z)
     local half_size = hg.Vec3(
       box.half_size.x,
       box.half_size.y,
@@ -207,27 +269,43 @@ local function create_preview_nodes(app, state)
       half_size.y * 2.0,
       half_size.z * 2.0))
 
-    state.preview_nodes.flat[#state.preview_nodes.flat + 1] = node
+    cell_state.preview_nodes.flat[#cell_state.preview_nodes.flat + 1] = node
     create_wireframe_box_nodes(
       scene,
       app.render.line_ref,
       wireframe_material,
       translation,
       half_size,
-      state.preview_nodes.wireframe)
+      cell_state.preview_nodes.wireframe)
+  end
+end
+
+local function create_preview_nodes(app, state)
+  if state.world_document == nil then
+    return
+  end
+
+  state.materials.flat_add_box = create_material(app, add_box_color)
+  state.materials.flat_subtract_box = create_material(app, subtract_box_color)
+  state.materials.wireframe_add_box = create_wireframe_material(app, add_box_color)
+  state.materials.wireframe_subtract_box = create_wireframe_material(app, subtract_box_color)
+
+  for index = 1, #state.cells do
+    create_preview_nodes_for_cell(app, state, state.cells[index])
   end
 
   update_preview_visibility(state)
 end
 
 function sdf_scene.attach(app)
-  local state = make_scene_file_state(resolve_default_scene_path())
+  local state = make_world_state(resolve_default_world_path())
   create_preview_nodes(app, state)
   app.sdf = state
+  app.sdf_world = state
 end
 
 function sdf_scene.update(app, frame)
-  local state = app.sdf
+  local state = app.sdf_world or app.sdf
   if state == nil then
     return
   end
@@ -239,16 +317,22 @@ function sdf_scene.update(app, frame)
     "SDF Scene",
     true,
     hg.ImGuiWindowFlags_NoMove | hg.ImGuiWindowFlags_NoResize | hg.ImGuiWindowFlags_NoCollapse) then
-    hg.ImGuiTextWrapped("Loaded procedural authoring state from app/sdf-scenes/. This preview only displays the source boxes.")
+    hg.ImGuiTextWrapped("Cells keep their objects in local space. The world document owns only cell placement in world space.")
 
     if state.load_error ~= nil then
       hg.ImGuiTextWrapped("Load error:")
       hg.ImGuiTextWrapped(state.load_error)
     else
-      hg.ImGuiText(string.format("Scene: %s", state.scene_file.scene.name))
-      hg.ImGuiText(string.format("Boxes: %d", state.box_count))
-      hg.ImGuiText(string.format("Meshing mode: %s", sdf.meshing_mode_name(state.scene_file.build_settings.meshing_mode)))
-      hg.ImGuiTextWrapped(string.format("Path: %s", state.path))
+      local active_cell = get_active_cell(state)
+      local active_cell_name = active_cell ~= nil and active_cell.name or "<none>"
+
+      hg.ImGuiText(string.format("World: %s", state.world_document.name))
+      hg.ImGuiText(string.format("Cells: %d (%d loaded)", #state.cells, state.loaded_cell_count))
+      hg.ImGuiText(string.format("Total Boxes: %d", state.total_box_count))
+      hg.ImGuiText(string.format("Cell Size: %.2f", state.world_document.cell_size))
+      hg.ImGuiText(string.format("Active Cell: %s", active_cell_name))
+      hg.ImGuiTextWrapped(string.format("World Path: %s", state.path))
+      hg.ImGuiSeparator()
       hg.ImGuiText("Preview Mode:")
 
       local preview_mode_changed
@@ -256,9 +340,63 @@ function sdf_scene.update(app, frame)
       local wireframe_changed
       wireframe_changed, state.preview_mode = hg.ImGuiRadioButton("Wireframe", state.preview_mode, preview_mode_wireframe)
 
-      local _changed
-      _changed, state.preview_visible = hg.ImGuiCheckbox("Show Boxes", state.preview_visible)
-      if preview_mode_changed or wireframe_changed or _changed then
+      local preview_visibility_changed
+      preview_visibility_changed, state.preview_visible = hg.ImGuiCheckbox("Show Boxes", state.preview_visible)
+      local inactive_visibility_changed
+      inactive_visibility_changed, state.show_inactive_cells = hg.ImGuiCheckbox("Show Inactive Cells", state.show_inactive_cells)
+
+      hg.ImGuiSeparator()
+
+      local active_cell_changed = false
+      if hg.ImGuiButton("Previous Cell") then
+        set_active_cell_index(state, state.active_cell_index - 1)
+        active_cell_changed = true
+      end
+      hg.ImGuiSameLine()
+      if hg.ImGuiButton("Next Cell") then
+        set_active_cell_index(state, state.active_cell_index + 1)
+        active_cell_changed = true
+      end
+
+      for index = 1, #state.cells do
+        local cell_state = state.cells[index]
+        local label
+        if cell_state.load_error ~= nil then
+          label = string.format("%s [load error]", cell_state.name)
+        else
+          label = string.format("%s (%d boxes)", cell_state.name, cell_state.box_count)
+        end
+
+        if hg.ImGuiSelectable(label, index == state.active_cell_index) then
+          set_active_cell_index(state, index)
+          active_cell_changed = true
+        end
+      end
+
+      active_cell = get_active_cell(state)
+      if active_cell ~= nil then
+        hg.ImGuiSeparator()
+        hg.ImGuiTextWrapped(string.format("Active Scene Path: %s", active_cell.scene_path))
+        hg.ImGuiText(string.format(
+          "Active Cell World T: %.2f, %.2f, %.2f",
+          active_cell.world_translation.x,
+          active_cell.world_translation.y,
+          active_cell.world_translation.z))
+
+        if active_cell.load_error ~= nil then
+          hg.ImGuiTextWrapped("Active cell load error:")
+          hg.ImGuiTextWrapped(active_cell.load_error)
+        elseif active_cell.scene_file ~= nil then
+          hg.ImGuiText(string.format("Active Scene: %s", active_cell.scene_file.scene.name))
+          hg.ImGuiText(string.format(
+            "Meshing Mode: %s",
+            sdf.meshing_mode_name(active_cell.scene_file.build_settings.meshing_mode)))
+        end
+      end
+
+      if preview_mode_changed or wireframe_changed or preview_visibility_changed or inactive_visibility_changed then
+        update_preview_visibility(state)
+      elseif active_cell_changed then
         update_preview_visibility(state)
       end
     end

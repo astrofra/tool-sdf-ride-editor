@@ -6,16 +6,23 @@ local app = runtime.create()
 local ok, err = xpcall(function()
   sdf_scene.attach(app)
 
-  assert(app.sdf ~= nil, "app.sdf should be initialized")
-  assert(app.sdf.scene_file ~= nil, app.sdf.load_error or "scene file should be loaded")
-  assert(app.sdf.box_count > 0, "scene should contain at least one box")
-  assert(#app.sdf.preview_nodes.flat == app.sdf.box_count, "flat preview node count should match box count")
-  assert(#app.sdf.preview_nodes.wireframe == app.sdf.box_count * 12, "wireframe preview node count should expose 12 edges per box")
+  assert(app.sdf_world ~= nil, "app.sdf_world should be initialized")
+  assert(app.sdf_world.world_document ~= nil, app.sdf_world.load_error or "world document should be loaded")
+  assert(#app.sdf_world.cells > 0, "world should contain at least one cell")
+  assert(app.sdf_world.active_cell_index ~= nil, "world should define an active cell")
+
+  local active_cell = app.sdf_world.cells[app.sdf_world.active_cell_index]
+  assert(active_cell ~= nil, "active cell should exist")
+  assert(active_cell.scene_file ~= nil, active_cell.load_error or "active cell scene file should be loaded")
+  assert(active_cell.box_count > 0, "active cell should contain at least one box")
+  assert(#active_cell.preview_nodes.flat == active_cell.box_count, "flat preview node count should match active cell box count")
+  assert(#active_cell.preview_nodes.wireframe == active_cell.box_count * 12, "wireframe preview node count should expose 12 edges per box")
 
   print(string.format(
-    "sdf scene smoke test passed (%s, %d boxes)",
-    app.sdf.path,
-    app.sdf.box_count))
+    "sdf scene smoke test passed (%s, %d cells, active=%s)",
+    app.sdf_world.path,
+    #app.sdf_world.cells,
+    active_cell.name))
 end, debug.traceback)
 
 runtime.shutdown(app)

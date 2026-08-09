@@ -1,0 +1,11 @@
+# Master world document for the editor prototype.
+# Syntax:
+#   world <name>
+#   cell_size <value>
+#   active_cell <cell_name>
+#   cell <cell_name> <scene_path> <tx> <ty> <tz>
+
+world default_blockout_world
+cell_size 64.0
+active_cell tile_000
+cell tile_000 sdf-scenes/tile_000.sdfscene 0 0 0
