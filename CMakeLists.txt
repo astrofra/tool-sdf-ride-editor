@@ -179,9 +179,11 @@ if(SDF_BUILD_LUA_MODULE)
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
   add_custom_command(TARGET sdf_generator POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory
+      "${CMAKE_SOURCE_DIR}/app/bin/hg_lua-win-x64"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
       "$<TARGET_FILE:sdf_generator>"
-      "${CMAKE_SOURCE_DIR}/app/$<TARGET_FILE_NAME:sdf_generator>")
+      "${CMAKE_SOURCE_DIR}/app/bin/hg_lua-win-x64/$<TARGET_FILE_NAME:sdf_generator>")
 
   sdf_apply_warnings(sdf_generator)
 endif()
