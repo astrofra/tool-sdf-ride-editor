@@ -32,14 +32,19 @@ def bind(gen):
     gen.add_include('vector', is_system=True)
     gen.add_include('sdf/lua_api.h')
 
-    gen.bind_named_enum('sdf::CsgOp', ['Add', 'Subtract'], prefix='CsgOp')
+    # These enums are declared as enum class : std::uint8_t in sdf::scene.h.
+    # Fabgen defaults named enums to int storage unless told otherwise, which
+    # corrupts the stack in Lua setters/getters on MSVC debug builds.
+    gen.bind_named_enum('sdf::CsgOp', ['Add', 'Subtract'], storage_type='uint8_t', prefix='CsgOp')
     gen.bind_named_enum(
         'sdf::ModifierMask',
         ['All', 'Top', 'Bottom', 'Edges', 'TopEdges'],
+        storage_type='uint8_t',
         prefix='ModifierMask')
     gen.bind_named_enum(
         'sdf::MeshingMode',
         ['MarchingTetrahedra', 'DualContouring', 'AdaptiveDualContouring'],
+        storage_type='uint8_t',
         prefix='MeshingMode')
 
     vec2 = gen.begin_class('sdf::Vec2', bound_name='SdfVec2')

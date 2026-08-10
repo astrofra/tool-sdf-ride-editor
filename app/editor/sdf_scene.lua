@@ -18,6 +18,10 @@ local subtract_box_color = {208, 112, 112}
 local selected_add_box_color = {244, 212, 122}
 local selected_subtract_box_color = {255, 166, 128}
 local wireframe_line_thickness = 0.08
+local box_name_input_max_size = 96
+local box_half_size_min = 0.01
+local box_value_epsilon = 0.0001
+local box_op_items = {"Add", "Subtract"}
 local create_preview_nodes_for_cell
 local rebuild_cell_preview
 
@@ -217,6 +221,37 @@ local function get_active_cell(state)
   return state.cells[state.active_cell_index]
 end
 
+local function copy_vec3(vec3)
+  return hg.Vec3(vec3.x, vec3.y, vec3.z)
+end
+
+local function assign_vec3(target, source)
+  target.x = source.x
+  target.y = source.y
+  target.z = source.z
+end
+
+local function trim_string(value)
+  if value == nil then
+    return ""
+  end
+
+  return tostring(value):match("^%s*(.-)%s*$")
+end
+
+local function clear_box_inspector(state)
+  if state.inspector == nil then
+    return
+  end
+
+  state.inspector.bound_cell_name = nil
+  state.inspector.bound_box_index = nil
+  state.inspector.name = ""
+  state.inspector.op_index = 0
+  state.inspector.translation = hg.Vec3(0.0, 0.0, 0.0)
+  state.inspector.half_size = hg.Vec3(1.0, 1.0, 1.0)
+end
+
 local function get_selected_box_index(state)
   if state.selection == nil then
     return nil
@@ -231,6 +266,7 @@ local function clear_selected_box_index(state)
   end
 
   state.selection.active_box_index = nil
+  clear_box_inspector(state)
 end
 
 local function get_selected_box(state)
@@ -258,6 +294,120 @@ local function format_box_op(box)
   end
 
   return "add"
+end
+
+local function box_op_to_combo_index(op)
+  if op == sdf.CsgOpSubtract then
+    return 1
+  end
+
+  return 0
+end
+
+local function combo_index_to_box_op(index)
+  if index == 0 then
+    return sdf.CsgOpAdd
+  elseif index == 1 then
+    return sdf.CsgOpSubtract
+  end
+
+  return nil
+end
+
+local function clamp_half_size_vec3(half_size)
+  local clamped_half_size = hg.Vec3(
+    math.max(box_half_size_min, half_size.x),
+    math.max(box_half_size_min, half_size.y),
+    math.max(box_half_size_min, half_size.z))
+  local was_clamped = clamped_half_size.x ~= half_size.x or
+    clamped_half_size.y ~= half_size.y or
+    clamped_half_size.z ~= half_size.z
+
+  return clamped_half_size, was_clamped
+end
+
+local function vec3_approx_equal(lhs, rhs)
+  return math.abs(lhs.x - rhs.x) < box_value_epsilon and
+    math.abs(lhs.y - rhs.y) < box_value_epsilon and
+    math.abs(lhs.z - rhs.z) < box_value_epsilon
+end
+
+local function sync_inspector_with_selected_box(state)
+  local selected_box
+  local selected_box_index
+  local active_cell
+  selected_box, selected_box_index, active_cell = get_selected_box(state)
+
+  if selected_box == nil or active_cell == nil then
+    clear_box_inspector(state)
+    return nil, nil, nil
+  end
+
+  local inspector = state.inspector
+  if inspector.bound_cell_name ~= active_cell.name or inspector.bound_box_index ~= selected_box_index then
+    inspector.bound_cell_name = active_cell.name
+    inspector.bound_box_index = selected_box_index
+    inspector.name = selected_box.name
+    inspector.op_index = box_op_to_combo_index(selected_box.op)
+    inspector.translation = copy_vec3(selected_box.transform.translation)
+    inspector.half_size = copy_vec3(selected_box.half_size)
+  end
+
+  return inspector, selected_box, active_cell
+end
+
+local function reset_inspector_to_selected_box(state)
+  if state.inspector == nil then
+    return nil, nil, nil
+  end
+
+  state.inspector.bound_cell_name = nil
+  state.inspector.bound_box_index = nil
+  return sync_inspector_with_selected_box(state)
+end
+
+local function normalize_box_update_input(box_data, fallback_box)
+  local translation = box_data.translation ~= nil and copy_vec3(box_data.translation) or copy_vec3(fallback_box.transform.translation)
+  local requested_half_size = box_data.half_size ~= nil and copy_vec3(box_data.half_size) or copy_vec3(fallback_box.half_size)
+  local half_size
+  local half_size_was_clamped
+  half_size, half_size_was_clamped = clamp_half_size_vec3(requested_half_size)
+
+  local op = box_data.op
+  if op == nil then
+    local op_index = box_data.op_index ~= nil and box_data.op_index or box_op_to_combo_index(fallback_box.op)
+    op = combo_index_to_box_op(op_index)
+  end
+
+  if op == nil then
+    return nil, "Invalid box operation"
+  end
+
+  return {
+    name = trim_string(box_data.name ~= nil and box_data.name or fallback_box.name),
+    op = op,
+    op_index = box_op_to_combo_index(op),
+    translation = translation,
+    half_size = half_size,
+    half_size_was_clamped = half_size_was_clamped
+  }, nil
+end
+
+local function does_normalized_box_match(box, normalized_box_data)
+  return box.name == normalized_box_data.name and
+    box.op == normalized_box_data.op and
+    vec3_approx_equal(box.transform.translation, normalized_box_data.translation) and
+    vec3_approx_equal(box.half_size, normalized_box_data.half_size)
+end
+
+local function has_box_name_conflict(boxes, selected_box_index, candidate_name)
+  for index = 1, #boxes do
+    if index ~= selected_box_index and trim_string(boxes[index].name) == candidate_name then
+      return true
+    end
+  end
+
+  return false
 end
 
 local function log_selected_box_state(app, state, prefix)
@@ -600,6 +750,20 @@ local function clone_box_list(boxes)
   return copy
 end
 
+local function build_box_list_with_replacement(boxes, replacement_index, replacement_box)
+  local updated_boxes = sdf.SdfBoxList()
+
+  for index = 1, #boxes do
+    if index == replacement_index then
+      updated_boxes:push_back(replacement_box)
+    else
+      updated_boxes:push_back(boxes[index])
+    end
+  end
+
+  return updated_boxes
+end
+
 local function replace_cell_boxes(state, cell_state, new_boxes)
   local new_box_count = #new_boxes
 
@@ -645,6 +809,14 @@ local function make_world_state(path)
     selection = {
       active_box_index = nil,
       left_button_was_down = false
+    },
+    inspector = {
+      bound_cell_name = nil,
+      bound_box_index = nil,
+      name = "",
+      op_index = 0,
+      translation = hg.Vec3(0.0, 0.0, 0.0),
+      half_size = hg.Vec3(1.0, 1.0, 1.0)
     },
     delete_cell_confirmation_armed = false,
     materials = {}
@@ -773,6 +945,91 @@ local function add_cell_at_position(app, state, world_position)
 
   create_cell_preview(app, state, cell_document)
   return true, cell_name
+end
+
+local function update_selected_box(app, state, box_data)
+  local selected_box
+  local selected_box_index
+  local active_cell
+  selected_box, selected_box_index, active_cell = get_selected_box(state)
+
+  if active_cell == nil then
+    return false, "No active cell is selected"
+  end
+
+  if active_cell.scene_file == nil then
+    return false, active_cell.load_error or string.format("Active cell %s is not loaded", active_cell.name)
+  end
+
+  if selected_box == nil or selected_box_index == nil then
+    return false, "No box is selected"
+  end
+
+  if box_data == nil then
+    return false, "No box data was provided"
+  end
+
+  local normalized_box_data
+  local normalize_error
+  normalized_box_data, normalize_error = normalize_box_update_input(box_data, selected_box)
+  if normalized_box_data == nil then
+    return false, normalize_error
+  end
+
+  if normalized_box_data.name == "" then
+    return false, "Box name cannot be empty"
+  end
+
+  if has_box_name_conflict(active_cell.scene_file.scene.boxes, selected_box_index, normalized_box_data.name) then
+    return false, string.format("Box name %s already exists in %s", normalized_box_data.name, active_cell.name)
+  end
+
+  box_data.name = normalized_box_data.name
+  box_data.op = normalized_box_data.op
+  box_data.op_index = normalized_box_data.op_index
+  box_data.translation = copy_vec3(normalized_box_data.translation)
+  box_data.half_size = copy_vec3(normalized_box_data.half_size)
+
+  if does_normalized_box_match(selected_box, normalized_box_data) then
+    return true, {
+      box_name = normalized_box_data.name,
+      op = normalized_box_data.op,
+      op_index = normalized_box_data.op_index,
+      translation = copy_vec3(normalized_box_data.translation),
+      half_size = copy_vec3(normalized_box_data.half_size),
+      half_size_was_clamped = normalized_box_data.half_size_was_clamped,
+      no_changes = true
+    }
+  end
+
+  local original_boxes = clone_box_list(active_cell.scene_file.scene.boxes)
+  local updated_box = original_boxes[selected_box_index]
+  updated_box.name = normalized_box_data.name
+  updated_box.op = normalized_box_data.op
+  assign_vec3(updated_box.transform.translation, normalized_box_data.translation)
+  assign_vec3(updated_box.half_size, normalized_box_data.half_size)
+
+  local updated_boxes = build_box_list_with_replacement(original_boxes, selected_box_index, updated_box)
+  replace_cell_boxes(state, active_cell, updated_boxes)
+
+  local scene_saved, scene_save_error = sdf.save_scene_file(active_cell.scene_file, active_cell.scene_path)
+  if not scene_saved then
+    replace_cell_boxes(state, active_cell, original_boxes)
+    rebuild_cell_preview(app, state, active_cell)
+    return false, scene_save_error
+  end
+
+  rebuild_cell_preview(app, state, active_cell)
+
+  return true, {
+    box_name = normalized_box_data.name,
+    op = normalized_box_data.op,
+    op_index = normalized_box_data.op_index,
+    translation = copy_vec3(normalized_box_data.translation),
+    half_size = copy_vec3(normalized_box_data.half_size),
+    half_size_was_clamped = normalized_box_data.half_size_was_clamped,
+    no_changes = false
+  }
 end
 
 local function delete_selected_box(app, state)
@@ -977,6 +1234,28 @@ function sdf_scene.delete_selected_box(app)
   return true, result
 end
 
+function sdf_scene.update_selected_box(app, box_data)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local ok, result = update_selected_box(app, state, box_data)
+  if not ok then
+    log_panel.error(app, string.format("Update box failed: %s", result))
+    return false, result
+  end
+
+  reset_inspector_to_selected_box(state)
+
+  if not result.no_changes then
+    local log_prefix = result.half_size_was_clamped and "Updated box (half-size clamped)" or "Updated box"
+    log_selected_box_state(app, state, log_prefix)
+  end
+
+  return true, result
+end
+
 function sdf_scene.handle_cell_placement_confirmation(app, frame)
   local state = app.sdf_world or app.sdf
   if state == nil then
@@ -1051,8 +1330,26 @@ function sdf_scene.update(app, frame)
 
       local selected_box = get_selected_box(state)
       if selected_box ~= nil then
+        local inspector = sync_inspector_with_selected_box(state)
         hg.ImGuiSeparator()
 
+        local _name_changed
+        _name_changed, inspector.name = hg.ImGuiInputText("Name", inspector.name, box_name_input_max_size)
+        local _op_changed
+        _op_changed, inspector.op_index = hg.ImGuiCombo("Op", inspector.op_index, box_op_items)
+        local _translation_changed
+        _translation_changed, inspector.translation = hg.ImGuiInputVec3("Local T", inspector.translation, 2)
+        local _half_size_changed
+        _half_size_changed, inspector.half_size = hg.ImGuiInputVec3("Half-Size", inspector.half_size, 2)
+
+        if hg.ImGuiButton("Apply Box") then
+          sdf_scene.update_selected_box(app, inspector)
+        end
+        hg.ImGuiSameLine()
+        if hg.ImGuiButton("Revert Box") then
+          reset_inspector_to_selected_box(state)
+        end
+        hg.ImGuiSameLine()
         if hg.ImGuiButton("Delete Selected Box") then
           sdf_scene.delete_selected_box(app)
         end
@@ -1060,6 +1357,8 @@ function sdf_scene.update(app, frame)
         if hg.ImGuiButton("Clear Selection") then
           sdf_scene.clear_box_selection(app)
         end
+      else
+        clear_box_inspector(state)
       end
 
       hg.ImGuiSeparator()

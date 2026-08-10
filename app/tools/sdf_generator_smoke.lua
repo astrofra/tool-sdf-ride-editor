@@ -19,7 +19,18 @@ local ok, scene_file, err = sdf.load_scene_file(scene_path)
 assert(ok, err)
 assert(scene_file.scene.name == "frame_006_blockout")
 
+local box = sdf.SdfBox()
+box.op = sdf.CsgOpSubtract
+assert(box.op == sdf.CsgOpSubtract)
+
+local modifier = sdf.NoiseDisplaceMaskedModifier()
+modifier.mask = sdf.ModifierMaskTopEdges
+assert(modifier.mask == sdf.ModifierMaskTopEdges)
+
 scene_file.build_settings.cell_size = 16.0
+scene_file.build_settings.meshing_mode = sdf.MeshingModeAdaptiveDualContouring
+assert(scene_file.build_settings.meshing_mode == sdf.MeshingModeAdaptiveDualContouring)
+assert(sdf.meshing_mode_name(scene_file.build_settings.meshing_mode) == "adaptive_dual_contouring")
 
 local request = sdf.BuildRequest()
 request.export_obj = false
