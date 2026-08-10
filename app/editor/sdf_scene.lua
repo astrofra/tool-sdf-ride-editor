@@ -22,6 +22,10 @@ local box_name_input_max_size = 96
 local box_half_size_min = 0.01
 local box_value_epsilon = 0.0001
 local box_op_items = {"Add", "Subtract"}
+local default_new_box_name = "box"
+local duplicate_box_name_suffix = "_copy"
+local default_new_box_half_extent_ratio = 0.05
+local minimum_box_offset = 1.0
 local create_preview_nodes_for_cell
 local rebuild_cell_preview
 
@@ -410,6 +414,79 @@ local function has_box_name_conflict(boxes, selected_box_index, candidate_name)
   return false
 end
 
+local function box_name_exists(boxes, candidate_name)
+  return has_box_name_conflict(boxes, nil, candidate_name)
+end
+
+local function allocate_unique_box_name(boxes, preferred_name)
+  local base_name = trim_string(preferred_name)
+  if base_name == "" then
+    base_name = default_new_box_name
+  end
+
+  if not box_name_exists(boxes, base_name) then
+    return base_name
+  end
+
+  local index = 1
+  while true do
+    local candidate_name = string.format("%s_%03d", base_name, index)
+    if not box_name_exists(boxes, candidate_name) then
+      return candidate_name
+    end
+    index = index + 1
+  end
+end
+
+local function make_box_clone(box)
+  local clone = sdf.SdfBox()
+  clone.name = box.name
+  clone.material_id = box.material_id
+  clone.op = box.op
+  assign_vec3(clone.transform.translation, box.transform.translation)
+  assign_vec3(clone.half_size, box.half_size)
+  return clone
+end
+
+local function make_default_new_box_half_size(state)
+  local cell_size = 100.0
+  if state.world_document ~= nil and state.world_document.cell_size ~= nil then
+    cell_size = state.world_document.cell_size
+  end
+
+  local half_extent = math.max(1.0, cell_size * default_new_box_half_extent_ratio)
+  return hg.Vec3(half_extent, half_extent, half_extent)
+end
+
+local function make_default_add_box(state, boxes, anchor_box)
+  local new_box = sdf.SdfBox()
+  local half_size = make_default_new_box_half_size(state)
+  local translation = hg.Vec3(0.0, half_size.y, 0.0)
+
+  if anchor_box ~= nil then
+    translation.x = anchor_box.transform.translation.x + anchor_box.half_size.x + half_size.x + minimum_box_offset
+    translation.y = anchor_box.transform.translation.y
+    translation.z = anchor_box.transform.translation.z
+  end
+
+  new_box.name = allocate_unique_box_name(boxes, default_new_box_name)
+  new_box.op = sdf.CsgOpAdd
+  assign_vec3(new_box.transform.translation, translation)
+  assign_vec3(new_box.half_size, half_size)
+
+  return new_box
+end
+
+local function make_duplicate_box(boxes, source_box)
+  local duplicate_box = make_box_clone(source_box)
+  local offset = math.max(source_box.half_size.x * 2.0, minimum_box_offset)
+
+  duplicate_box.name = allocate_unique_box_name(boxes, source_box.name .. duplicate_box_name_suffix)
+  duplicate_box.transform.translation.x = duplicate_box.transform.translation.x + offset
+
+  return duplicate_box
+end
+
 local function log_selected_box_state(app, state, prefix)
   local selected_box
   local selected_box_index
@@ -764,6 +841,12 @@ local function build_box_list_with_replacement(boxes, replacement_index, replace
   return updated_boxes
 end
 
+local function build_box_list_with_appended_box(boxes, appended_box)
+  local updated_boxes = clone_box_list(boxes)
+  updated_boxes:push_back(appended_box)
+  return updated_boxes
+end
+
 local function replace_cell_boxes(state, cell_state, new_boxes)
   local new_box_count = #new_boxes
 
@@ -945,6 +1028,99 @@ local function add_cell_at_position(app, state, world_position)
 
   create_cell_preview(app, state, cell_document)
   return true, cell_name
+end
+
+local function save_active_cell_scene_file(app, state, active_cell, original_boxes)
+  local scene_saved, scene_save_error = sdf.save_scene_file(active_cell.scene_file, active_cell.scene_path)
+  if scene_saved then
+    return true, nil
+  end
+
+  replace_cell_boxes(state, active_cell, original_boxes)
+  rebuild_cell_preview(app, state, active_cell)
+  return false, scene_save_error
+end
+
+local function add_box(app, state)
+  local selected_box
+  local active_cell
+  selected_box, _, active_cell = get_selected_box(state)
+
+  if active_cell == nil then
+    return false, "No active cell is selected"
+  end
+
+  if active_cell.scene_file == nil then
+    return false, active_cell.load_error or string.format("Active cell %s is not loaded", active_cell.name)
+  end
+
+  local original_boxes = clone_box_list(active_cell.scene_file.scene.boxes)
+  local new_box = make_default_add_box(state, original_boxes, selected_box)
+  local updated_boxes = build_box_list_with_appended_box(original_boxes, new_box)
+  local new_box_index = #updated_boxes
+
+  replace_cell_boxes(state, active_cell, updated_boxes)
+
+  local saved, save_error = save_active_cell_scene_file(app, state, active_cell, original_boxes)
+  if not saved then
+    return false, save_error
+  end
+
+  state.selection.active_box_index = new_box_index
+  reset_inspector_to_selected_box(state)
+  rebuild_cell_preview(app, state, active_cell)
+
+  return true, {
+    box_name = new_box.name,
+    box_index = new_box_index,
+    op = new_box.op,
+    translation = copy_vec3(new_box.transform.translation),
+    half_size = copy_vec3(new_box.half_size)
+  }
+end
+
+local function duplicate_selected_box(app, state)
+  local selected_box
+  local selected_box_index
+  local active_cell
+  selected_box, selected_box_index, active_cell = get_selected_box(state)
+
+  if active_cell == nil then
+    return false, "No active cell is selected"
+  end
+
+  if active_cell.scene_file == nil then
+    return false, active_cell.load_error or string.format("Active cell %s is not loaded", active_cell.name)
+  end
+
+  if selected_box == nil or selected_box_index == nil then
+    return false, "No box is selected"
+  end
+
+  local original_boxes = clone_box_list(active_cell.scene_file.scene.boxes)
+  local duplicated_box = make_duplicate_box(original_boxes, selected_box)
+  local updated_boxes = build_box_list_with_appended_box(original_boxes, duplicated_box)
+  local duplicated_box_index = #updated_boxes
+
+  replace_cell_boxes(state, active_cell, updated_boxes)
+
+  local saved, save_error = save_active_cell_scene_file(app, state, active_cell, original_boxes)
+  if not saved then
+    return false, save_error
+  end
+
+  state.selection.active_box_index = duplicated_box_index
+  reset_inspector_to_selected_box(state)
+  rebuild_cell_preview(app, state, active_cell)
+
+  return true, {
+    source_box_name = selected_box.name,
+    box_name = duplicated_box.name,
+    box_index = duplicated_box_index,
+    op = duplicated_box.op,
+    translation = copy_vec3(duplicated_box.transform.translation),
+    half_size = copy_vec3(duplicated_box.half_size)
+  }
 end
 
 local function update_selected_box(app, state, box_data)
@@ -1256,6 +1432,38 @@ function sdf_scene.update_selected_box(app, box_data)
   return true, result
 end
 
+function sdf_scene.add_box(app)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local ok, result = add_box(app, state)
+  if not ok then
+    log_panel.error(app, string.format("Add box failed: %s", result))
+    return false, result
+  end
+
+  log_selected_box_state(app, state, "Added box")
+  return true, result
+end
+
+function sdf_scene.duplicate_selected_box(app)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local ok, result = duplicate_selected_box(app, state)
+  if not ok then
+    log_panel.error(app, string.format("Duplicate box failed: %s", result))
+    return false, result
+  end
+
+  log_selected_box_state(app, state, "Duplicated box")
+  return true, result
+end
+
 function sdf_scene.handle_cell_placement_confirmation(app, frame)
   local state = app.sdf_world or app.sdf
   if state == nil then
@@ -1329,6 +1537,19 @@ function sdf_scene.update(app, frame)
       end
 
       local selected_box = get_selected_box(state)
+      if active_cell ~= nil and active_cell.scene_file ~= nil then
+        if hg.ImGuiButton("Add Box") then
+          sdf_scene.add_box(app)
+        end
+
+        if selected_box ~= nil then
+          hg.ImGuiSameLine()
+          if hg.ImGuiButton("Duplicate Box") then
+            sdf_scene.duplicate_selected_box(app)
+          end
+        end
+      end
+
       if selected_box ~= nil then
         local inspector = sync_inspector_with_selected_box(state)
         hg.ImGuiSeparator()
