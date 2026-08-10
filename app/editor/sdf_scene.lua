@@ -1,6 +1,7 @@
 local hg = require("harfang")
 local sdf = require("sdf-generator")
 local log_panel = require("editor.log_panel")
+local sdf_selection = require("editor.sdf_selection")
 local sdf_world = require("editor.sdf_world")
 local sdf_cell_factory = require("editor.sdf_cell_factory")
 local ground_plane = require("editor.ground_plane")
@@ -14,8 +15,11 @@ local preview_mode_flat = 0
 local preview_mode_wireframe = 1
 local add_box_color = {166, 174, 186}
 local subtract_box_color = {208, 112, 112}
+local selected_add_box_color = {244, 212, 122}
+local selected_subtract_box_color = {255, 166, 128}
 local wireframe_line_thickness = 0.08
 local create_preview_nodes_for_cell
+local rebuild_cell_preview
 
 local function file_exists(path)
   local handle = io.open(path, "rb")
@@ -213,8 +217,70 @@ local function get_active_cell(state)
   return state.cells[state.active_cell_index]
 end
 
+local function get_selected_box_index(state)
+  if state.selection == nil then
+    return nil
+  end
+
+  return state.selection.active_box_index
+end
+
+local function clear_selected_box_index(state)
+  if state.selection == nil then
+    return
+  end
+
+  state.selection.active_box_index = nil
+end
+
+local function get_selected_box(state)
+  local active_cell = get_active_cell(state)
+  local selected_box_index = get_selected_box_index(state)
+  if active_cell == nil or active_cell.scene_file == nil or selected_box_index == nil then
+    return nil, nil, active_cell
+  end
+
+  local boxes = active_cell.scene_file.scene.boxes
+  if selected_box_index < 1 or selected_box_index > #boxes then
+    return nil, nil, active_cell
+  end
+
+  return boxes[selected_box_index], selected_box_index, active_cell
+end
+
 local function format_vec3_components(vec3)
   return string.format("%.2f, %.2f, %.2f", vec3.x, vec3.y, vec3.z)
+end
+
+local function format_box_op(box)
+  if box.op == sdf.CsgOpSubtract then
+    return "subtract"
+  end
+
+  return "add"
+end
+
+local function log_selected_box_state(app, state, prefix)
+  local selected_box
+  local selected_box_index
+  local active_cell
+  selected_box, selected_box_index, active_cell = get_selected_box(state)
+  if selected_box == nil or active_cell == nil then
+    log_panel.info(app, string.format("%s: none", prefix or "Selection"))
+    return
+  end
+
+  log_panel.info(
+    app,
+    string.format(
+      "%s: %s in %s (box %d, %s, local T %s, half-size %s)",
+      prefix or "Selection",
+      selected_box.name,
+      active_cell.name,
+      selected_box_index,
+      format_box_op(selected_box),
+      format_vec3_components(selected_box.transform.translation),
+      format_vec3_components(selected_box.half_size)))
 end
 
 local function log_active_cell_state(app, state, prefix)
@@ -303,11 +369,20 @@ local function set_active_cell_index(state, new_index, app, log_prefix)
   end
 
   local previous_index = state.active_cell_index
+  local previous_cell = previous_index ~= nil and state.cells[previous_index] or nil
+  local had_selection = get_selected_box_index(state) ~= nil
 
   if new_index < 1 then
     new_index = cell_count
   elseif new_index > cell_count then
     new_index = 1
+  end
+
+  if previous_cell ~= nil and had_selection and app ~= nil then
+    clear_selected_box_index(state)
+    rebuild_cell_preview(app, state, previous_cell)
+  else
+    clear_selected_box_index(state)
   end
 
   state.active_cell_index = new_index
@@ -363,6 +438,49 @@ local function handle_cell_placement_confirmation(app, state, frame)
 
   local ok = sdf_scene.add_cell_at_position(app, placement_state.snapped_world_position)
   return ok
+end
+
+local function set_selected_box_index(app, state, new_index, log_prefix)
+  local active_cell = get_active_cell(state)
+  local previous_index = get_selected_box_index(state)
+
+  if previous_index == new_index then
+    return new_index ~= nil, new_index
+  end
+
+  state.selection.active_box_index = new_index
+
+  if active_cell ~= nil and app ~= nil then
+    rebuild_cell_preview(app, state, active_cell)
+  end
+
+  if app ~= nil then
+    if new_index ~= nil then
+      log_selected_box_state(app, state, log_prefix or "Selected box")
+    elseif previous_index ~= nil then
+      log_panel.info(app, string.format("%s cleared", log_prefix or "Selection"))
+    end
+  end
+
+  return new_index ~= nil, new_index
+end
+
+local function handle_box_selection(app, state, frame)
+  local selection_state = state.selection
+  local left_button_down = frame.mouse:Button(hg.MB_0)
+  local clicked_this_frame = left_button_down and not selection_state.left_button_was_down
+
+  selection_state.left_button_was_down = left_button_down
+
+  if state.cell_placement.active or not state.preview_visible then
+    return false, nil
+  end
+
+  if hg.ImGuiWantCaptureMouse() or not clicked_this_frame then
+    return false, nil
+  end
+
+  return sdf_scene.select_box_at_viewport_position(app, frame, frame.mouse:X(), frame.mouse:Y())
 end
 
 local function make_cell_state(cell_document)
@@ -472,6 +590,24 @@ local function remove_cell_preview(app, cell_state)
   cell_state.preview_nodes.wireframe = {}
 end
 
+local function clone_box_list(boxes)
+  local copy = sdf.SdfBoxList()
+
+  for index = 1, #boxes do
+    copy:push_back(boxes[index])
+  end
+
+  return copy
+end
+
+local function replace_cell_boxes(state, cell_state, new_boxes)
+  local new_box_count = #new_boxes
+
+  cell_state.scene_file.scene.boxes = new_boxes
+  state.total_box_count = state.total_box_count - cell_state.box_count + new_box_count
+  cell_state.box_count = new_box_count
+end
+
 local function remove_cell_state_at_index(app, state, cell_index)
   local cell_state = table.remove(state.cells, cell_index)
   if cell_state == nil then
@@ -506,6 +642,10 @@ local function make_world_state(path)
       snapped_world_position = hg.Vec3(0.0, 0.0, 0.0),
       left_button_was_down = false
     },
+    selection = {
+      active_box_index = nil,
+      left_button_was_down = false
+    },
     delete_cell_confirmation_armed = false,
     materials = {}
   }
@@ -533,11 +673,24 @@ create_preview_nodes_for_cell = function(app, state, cell_state)
 
   local scene = app.scene.handle
   local boxes = cell_state.scene_file.scene.boxes
+  local active_cell = get_active_cell(state)
+  local selected_box_index = get_selected_box_index(state)
+
   for index = 1, #boxes do
     local box = boxes[index]
     local is_subtractive = box.op == sdf.CsgOpSubtract
-    local flat_material = is_subtractive and state.materials.flat_subtract_box or state.materials.flat_add_box
-    local wireframe_material = is_subtractive and state.materials.wireframe_subtract_box or state.materials.wireframe_add_box
+    local is_selected = active_cell == cell_state and selected_box_index == index
+    local flat_material
+    local wireframe_material
+
+    if is_selected then
+      flat_material = is_subtractive and state.materials.flat_selected_subtract_box or state.materials.flat_selected_add_box
+      wireframe_material = is_subtractive and state.materials.wireframe_selected_subtract_box or state.materials.wireframe_selected_add_box
+    else
+      flat_material = is_subtractive and state.materials.flat_subtract_box or state.materials.flat_add_box
+      wireframe_material = is_subtractive and state.materials.wireframe_subtract_box or state.materials.wireframe_add_box
+    end
+
     local node = hg.CreateObject(scene, hg.Mat4.Identity, app.render.line_ref, {flat_material})
     local transform = node:GetTransform()
     local translation = hg.Vec3(
@@ -567,6 +720,16 @@ create_preview_nodes_for_cell = function(app, state, cell_state)
   end
 end
 
+rebuild_cell_preview = function(app, state, cell_state)
+  remove_cell_preview(app, cell_state)
+
+  if cell_state.scene_file ~= nil then
+    create_preview_nodes_for_cell(app, state, cell_state)
+  end
+
+  update_preview_visibility(state)
+end
+
 local function create_preview_nodes(app, state)
   if state.world_document == nil then
     return
@@ -574,8 +737,12 @@ local function create_preview_nodes(app, state)
 
   state.materials.flat_add_box = create_material(app, add_box_color)
   state.materials.flat_subtract_box = create_material(app, subtract_box_color)
+  state.materials.flat_selected_add_box = create_material(app, selected_add_box_color)
+  state.materials.flat_selected_subtract_box = create_material(app, selected_subtract_box_color)
   state.materials.wireframe_add_box = create_wireframe_material(app, add_box_color)
   state.materials.wireframe_subtract_box = create_wireframe_material(app, subtract_box_color)
+  state.materials.wireframe_selected_add_box = create_wireframe_material(app, selected_add_box_color)
+  state.materials.wireframe_selected_subtract_box = create_wireframe_material(app, selected_subtract_box_color)
 
   for index = 1, #state.cells do
     create_preview_nodes_for_cell(app, state, state.cells[index])
@@ -606,6 +773,49 @@ local function add_cell_at_position(app, state, world_position)
 
   create_cell_preview(app, state, cell_document)
   return true, cell_name
+end
+
+local function delete_selected_box(app, state)
+  local selected_box
+  local selected_box_index
+  local active_cell
+  selected_box, selected_box_index, active_cell = get_selected_box(state)
+
+  if active_cell == nil then
+    return false, "No active cell is selected"
+  end
+
+  if active_cell.scene_file == nil then
+    return false, active_cell.load_error or string.format("Active cell %s is not loaded", active_cell.name)
+  end
+
+  if selected_box == nil or selected_box_index == nil then
+    return false, "No box is selected"
+  end
+
+  local deleted_box_name = selected_box.name
+  local original_boxes = clone_box_list(active_cell.scene_file.scene.boxes)
+  local filtered_boxes = sdf.SdfBoxList()
+
+  for index = 1, #original_boxes do
+    if index ~= selected_box_index then
+      filtered_boxes:push_back(original_boxes[index])
+    end
+  end
+
+  replace_cell_boxes(state, active_cell, filtered_boxes)
+
+  local scene_saved, scene_save_error = sdf.save_scene_file(active_cell.scene_file, active_cell.scene_path)
+  if not scene_saved then
+    replace_cell_boxes(state, active_cell, original_boxes)
+    rebuild_cell_preview(app, state, active_cell)
+    return false, scene_save_error
+  end
+
+  clear_selected_box_index(state)
+  rebuild_cell_preview(app, state, active_cell)
+
+  return true, deleted_box_name
 end
 
 local function delete_active_cell(app, state)
@@ -640,6 +850,7 @@ local function delete_active_cell(app, state)
     return false, world_save_error
   end
 
+  clear_selected_box_index(state)
   remove_cell_state_at_index(app, state, delete_index)
   set_active_cell_index(state, math.min(delete_index, #state.cells), app, "Active cell")
   cancel_cell_placement(state)
@@ -717,6 +928,55 @@ function sdf_scene.delete_active_cell(app)
   return true, result.cell_name
 end
 
+function sdf_scene.select_box_at_viewport_position(app, frame, screen_x, screen_y)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local active_cell = get_active_cell(state)
+  if active_cell == nil then
+    return false, "No active cell is selected"
+  end
+
+  if active_cell.scene_file == nil then
+    return false, active_cell.load_error or string.format("Active cell %s is not loaded", active_cell.name)
+  end
+
+  local selected_box_index = sdf_selection.pick_box_index(active_cell, frame, screen_x, screen_y)
+  local did_select = selected_box_index ~= nil
+  set_selected_box_index(app, state, selected_box_index, did_select and "Selected box" or "Selection")
+
+  return did_select, selected_box_index
+end
+
+function sdf_scene.clear_box_selection(app)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local had_selection = get_selected_box_index(state) ~= nil
+  set_selected_box_index(app, state, nil, "Selection")
+  return had_selection, nil
+end
+
+function sdf_scene.delete_selected_box(app)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local ok, result = delete_selected_box(app, state)
+  if not ok then
+    log_panel.error(app, string.format("Delete box failed: %s", result))
+    return false, result
+  end
+
+  log_panel.info(app, string.format("Deleted box %s from %s", result, state.world_document.active_cell_name))
+  return true, result
+end
+
 function sdf_scene.handle_cell_placement_confirmation(app, frame)
   local state = app.sdf_world or app.sdf
   if state == nil then
@@ -789,6 +1049,19 @@ function sdf_scene.update(app, frame)
         end
       end
 
+      local selected_box = get_selected_box(state)
+      if selected_box ~= nil then
+        hg.ImGuiSeparator()
+
+        if hg.ImGuiButton("Delete Selected Box") then
+          sdf_scene.delete_selected_box(app)
+        end
+        hg.ImGuiSameLine()
+        if hg.ImGuiButton("Clear Selection") then
+          sdf_scene.clear_box_selection(app)
+        end
+      end
+
       hg.ImGuiSeparator()
 
       local preview_mode_changed
@@ -856,7 +1129,10 @@ function sdf_scene.update(app, frame)
 
   hg.ImGuiEnd()
 
-  handle_cell_placement_confirmation(app, state, frame)
+  local placement_handled = handle_cell_placement_confirmation(app, state, frame)
+  if not placement_handled then
+    handle_box_selection(app, state, frame)
+  end
 end
 
 return sdf_scene

@@ -14,6 +14,8 @@ local ok, err = xpcall(function()
   assert(math.abs(app.sdf_world.world_document.effective_cell_span - 120.0) < 0.0001, "world should expose 120m effective span")
   assert(app.sdf_world.cell_placement ~= nil, "world should expose cell placement state")
   assert(app.sdf_world.cell_placement.active == false, "cell placement should be idle by default")
+  assert(app.sdf_world.selection ~= nil, "world should expose selection state")
+  assert(app.sdf_world.selection.active_box_index == nil, "box selection should be empty by default")
   assert(#app.sdf_world.cells > 0, "world should contain at least one cell")
   assert(app.sdf_world.active_cell_index ~= nil, "world should define an active cell")
 

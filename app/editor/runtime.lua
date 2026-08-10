@@ -51,9 +51,11 @@ local function update_follow_spotlight(app, frame)
 
   local target = compute_follow_spotlight_target(app, frame)
   local position = make_follow_spotlight_position(target)
+  local direction = hg.Normalize(target - position)
 
   spotlight.target = target
-  spotlight.transform:SetWorld(hg.Mat4LookAt(position, target))
+  spotlight.transform:SetPos(position)
+  spotlight.transform:SetRot(hg.ToEuler(hg.Mat3LookAt(direction)))
 end
 
 function runtime.create()
@@ -193,7 +195,9 @@ function runtime.begin_frame(app)
 end
 
 function runtime.prepare_camera_frame(app, frame)
-  local camera_world = app.scene.camera_transform:GetWorld()
+  local camera_world = hg.TransformationMat4(
+    app.scene.camera_transform:GetPos(),
+    app.scene.camera_transform:GetRot())
   local camera_component = app.scene.camera:GetCamera()
   local view_matrix = hg.InverseFast(camera_world)
   local projection_matrix = hg.ComputePerspectiveProjectionMatrix(
