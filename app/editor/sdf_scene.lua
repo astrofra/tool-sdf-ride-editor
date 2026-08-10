@@ -2162,6 +2162,15 @@ function sdf_scene.update(app, frame)
       preview_mode_changed, state.preview_mode = hg.ImGuiRadioButton("Flat Shaded", state.preview_mode, preview_mode_flat)
       local wireframe_changed
       wireframe_changed, state.preview_mode = hg.ImGuiRadioButton("Wireframe", state.preview_mode, preview_mode_wireframe)
+      local gizmo_xray_changed = false
+      local gizmo_xray_enabled = false
+      if app.gizmos ~= nil and app.gizmos.translation ~= nil then
+        gizmo_xray_enabled = app.gizmos.translation.xray_enabled == true
+        gizmo_xray_changed, gizmo_xray_enabled = hg.ImGuiCheckbox("Gizmo X-Ray", gizmo_xray_enabled)
+        if gizmo_xray_changed then
+          app.gizmos.translation.xray_enabled = gizmo_xray_enabled
+        end
+      end
 
       local preview_visibility_changed
       preview_visibility_changed, state.preview_visible = hg.ImGuiCheckbox("Show Boxes", state.preview_visible)
@@ -2189,7 +2198,7 @@ function sdf_scene.update(app, frame)
         end
       end
 
-      if preview_mode_changed or wireframe_changed or preview_visibility_changed or inactive_visibility_changed then
+      if preview_mode_changed or wireframe_changed or gizmo_xray_changed or preview_visibility_changed or inactive_visibility_changed then
         update_preview_visibility(state)
 
         if preview_mode_changed or wireframe_changed then
@@ -2197,6 +2206,14 @@ function sdf_scene.update(app, frame)
             log_panel.info(app, "Preview mode: flat shaded")
           else
             log_panel.info(app, "Preview mode: wireframe")
+          end
+        end
+
+        if gizmo_xray_changed then
+          if gizmo_xray_enabled then
+            log_panel.info(app, "Gizmo X-ray enabled")
+          else
+            log_panel.info(app, "Gizmo X-ray disabled")
           end
         end
 

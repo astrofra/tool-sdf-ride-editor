@@ -234,9 +234,10 @@ Recommended snap policy:
 
 Current implementation note:
 
-- the first gizmo slice is an axis-only translation gizmo;
+- the first gizmo slice now includes axis handles plus `XY` / `YZ` / `ZX` plane handles for local translation;
+- gizmo X-ray can be toggled to keep hidden handles readable through box geometry;
 - it commits through the same auto-save / undo merge path as inspector edits;
-- plane handles and resize gizmos remain future work.
+- resize gizmos remain future work.
 
 This is the point where a gizmo can become useful, but it should not be a prerequisite for the first stable edit loop.
 

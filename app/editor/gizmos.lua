@@ -17,6 +17,11 @@ local translation_axis_length_factor = 0.14
 local translation_axis_min_length = 4.0
 local translation_axis_max_length = 18.0
 local translation_axis_pick_threshold_pixels = 14.0
+local translation_plane_size_factor = 0.24
+local translation_plane_offset_factor = 0.14
+local translation_plane_thickness = 0.09
+local translation_xray_alpha = 0.5
+local translation_xray_darken_factor = 0.42
 
 local translation_axis_definitions = {
   {
@@ -39,10 +44,43 @@ local translation_axis_definitions = {
   }
 }
 
+local translation_plane_definitions = {
+  {
+    name = "xy",
+    axis_a_name = "x",
+    axis_b_name = "y",
+    normal_axis_name = "z",
+    rotation = hg.Vec3(hg.Deg(90), 0.0, 0.0),
+    base_rgb = {176, 168, 96}
+  },
+  {
+    name = "yz",
+    axis_a_name = "y",
+    axis_b_name = "z",
+    normal_axis_name = "x",
+    rotation = hg.Vec3(0.0, 0.0, hg.Deg(90)),
+    base_rgb = {96, 160, 168}
+  },
+  {
+    name = "zx",
+    axis_a_name = "z",
+    axis_b_name = "x",
+    normal_axis_name = "y",
+    rotation = hg.Vec3(0.0, 0.0, 0.0),
+    base_rgb = {168, 120, 96}
+  }
+}
+
 local translation_axis_by_name = {}
 for index = 1, #translation_axis_definitions do
   local axis_definition = translation_axis_definitions[index]
   translation_axis_by_name[axis_definition.name] = axis_definition
+end
+
+local translation_plane_by_name = {}
+for index = 1, #translation_plane_definitions do
+  local plane_definition = translation_plane_definitions[index]
+  translation_plane_by_name[plane_definition.name] = plane_definition
 end
 
 local function snap_down_to_step(value, step)
@@ -68,39 +106,72 @@ local function shader_color_channel_from_byte(value, gamma)
   return math.max(0.0, math.min(value / 255.0, 1.0)) ^ gamma
 end
 
-local function make_default_shader_color(app, r, g, b)
+local function make_default_shader_color(app, rgb, alpha)
   return hg.Vec4(
-    shader_color_channel_from_byte(r, app.theme.default_shader_gamma),
-    shader_color_channel_from_byte(g, app.theme.default_shader_gamma),
-    shader_color_channel_from_byte(b, app.theme.default_shader_gamma),
-    1.0)
+    shader_color_channel_from_byte(rgb[1], app.theme.default_shader_gamma),
+    shader_color_channel_from_byte(rgb[2], app.theme.default_shader_gamma),
+    shader_color_channel_from_byte(rgb[3], app.theme.default_shader_gamma),
+    alpha or 1.0)
 end
 
-local function create_locked_default_material(app, diffuse_color, specular_color, self_color)
+local function darken_rgb(rgb, factor)
+  return {
+    math.floor(rgb[1] * factor + 0.5),
+    math.floor(rgb[2] * factor + 0.5),
+    math.floor(rgb[3] * factor + 0.5)
+  }
+end
+
+local function create_locked_default_material(app, diffuse_color, specular_color, self_color, options)
   local material = hg.CreateMaterial(app.render.shader_ref)
   hg.SetMaterialValue(material, "uDiffuseColor", diffuse_color)
   hg.SetMaterialValue(material, "uSpecularColor", specular_color)
   hg.SetMaterialValue(material, "uSelfColor", self_color)
+
+  options = options or {}
+  if options.blend_mode ~= nil then
+    hg.SetMaterialBlendMode(material, options.blend_mode)
+  end
+  if options.depth_test ~= nil then
+    hg.SetMaterialDepthTest(material, options.depth_test)
+  end
+  if options.write_z ~= nil then
+    hg.SetMaterialWriteZ(material, options.write_z)
+  end
+  if options.face_culling ~= nil then
+    hg.SetMaterialFaceCulling(material, options.face_culling)
+  end
+
   return material
 end
 
-local function create_material(app, r, g, b)
-  local shader_color = make_default_shader_color(app, r, g, b)
-  return create_locked_default_material(
-    app,
-    shader_color,
-    shader_color,
-    hg.Vec4(0.0, 0.0, 0.0, 1.0))
+local function create_material(app, rgb, options)
+  options = options or {}
+  local alpha = options.alpha or 1.0
+  local diffuse_color = make_default_shader_color(app, rgb, alpha)
+  local specular_color = options.specular_rgb ~= nil and
+    make_default_shader_color(app, options.specular_rgb, alpha) or
+    diffuse_color
+  local self_color = options.self_rgb ~= nil and
+    make_default_shader_color(app, options.self_rgb, alpha) or
+    hg.Vec4(0.0, 0.0, 0.0, 1.0)
+
+  return create_locked_default_material(app, diffuse_color, specular_color, self_color, options)
 end
 
 local function copy_vec3(vec3)
   return hg.Vec3(vec3.x, vec3.y, vec3.z)
 end
 
-local function set_line_transform(transform, position, rotation, length, thickness)
+local function get_axis_direction(axis_name)
+  local axis_definition = translation_axis_by_name[axis_name]
+  return axis_definition ~= nil and axis_definition.direction or nil
+end
+
+local function set_box_transform(transform, position, rotation, scale)
   transform:SetPos(position)
   transform:SetRot(rotation)
-  transform:SetScale(hg.Vec3(length, thickness, thickness))
+  transform:SetScale(scale)
 end
 
 local function set_nodes_enabled(nodes, is_enabled)
@@ -140,16 +211,52 @@ local function create_square_outline_nodes(scene, line_ref, material)
   return nodes
 end
 
-local function create_translation_axis_nodes(scene, line_ref, base_material, active_material)
-  local base_node = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {base_material})
-  local active_node = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {active_material})
-
-  active_node:Disable()
-
-  return {
-    base = base_node,
-    active = active_node
+local function create_handle_node_bundle(scene, line_ref, materials)
+  local bundle = {
+    base = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {materials.base}),
+    active = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {materials.active}),
+    xray_base = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {materials.xray_base}),
+    xray_active = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {materials.xray_active}),
+    materials = materials
   }
+
+  bundle.base:Disable()
+  bundle.active:Disable()
+  bundle.xray_base:Disable()
+  bundle.xray_active:Disable()
+
+  return bundle
+end
+
+local function set_handle_node_bundle_visibility(bundle, is_visible, is_highlighted, xray_enabled)
+  if not is_visible then
+    bundle.base:Disable()
+    bundle.active:Disable()
+    bundle.xray_base:Disable()
+    bundle.xray_active:Disable()
+    return
+  end
+
+  if is_highlighted then
+    bundle.base:Disable()
+    bundle.active:Enable()
+  else
+    bundle.base:Enable()
+    bundle.active:Disable()
+  end
+
+  if xray_enabled then
+    if is_highlighted then
+      bundle.xray_base:Disable()
+      bundle.xray_active:Enable()
+    else
+      bundle.xray_base:Enable()
+      bundle.xray_active:Disable()
+    end
+  else
+    bundle.xray_base:Disable()
+    bundle.xray_active:Disable()
+  end
 end
 
 local function get_world_state(app)
@@ -194,54 +301,54 @@ end
 local function update_grid_nodes(grid_x_nodes, grid_z_nodes, center)
   for index = 1, #grid_x_nodes do
     local offset = -grid_half_extent + (index - 1) * grid_spacing
-    set_line_transform(
+    set_box_transform(
       grid_x_nodes[index]:GetTransform(),
       hg.Vec3(center.x, grid_height, center.z + offset),
       hg.Vec3(0.0, 0.0, 0.0),
-      grid_half_extent * 2,
-      grid_line_thickness)
-    set_line_transform(
+      hg.Vec3(grid_half_extent * 2, grid_line_thickness, grid_line_thickness))
+    set_box_transform(
       grid_z_nodes[index]:GetTransform(),
       hg.Vec3(center.x + offset, grid_height, center.z),
       hg.Vec3(0.0, hg.Deg(90), 0.0),
-      grid_half_extent * 2,
-      grid_line_thickness)
+      hg.Vec3(grid_half_extent * 2, grid_line_thickness, grid_line_thickness))
   end
 end
 
 local function update_square_outline_nodes(nodes, center, size, height, thickness)
   local half_extent = size * 0.5
 
-  set_line_transform(
+  set_box_transform(
     nodes[1]:GetTransform(),
     hg.Vec3(center.x, height, center.z - half_extent),
     hg.Vec3(0.0, 0.0, 0.0),
-    size,
-    thickness)
-  set_line_transform(
+    hg.Vec3(size, thickness, thickness))
+  set_box_transform(
     nodes[2]:GetTransform(),
     hg.Vec3(center.x, height, center.z + half_extent),
     hg.Vec3(0.0, 0.0, 0.0),
-    size,
-    thickness)
-  set_line_transform(
+    hg.Vec3(size, thickness, thickness))
+  set_box_transform(
     nodes[3]:GetTransform(),
     hg.Vec3(center.x - half_extent, height, center.z),
     hg.Vec3(0.0, hg.Deg(90), 0.0),
-    size,
-    thickness)
-  set_line_transform(
+    hg.Vec3(size, thickness, thickness))
+  set_box_transform(
     nodes[4]:GetTransform(),
     hg.Vec3(center.x + half_extent, height, center.z),
     hg.Vec3(0.0, hg.Deg(90), 0.0),
-    size,
-    thickness)
+    hg.Vec3(size, thickness, thickness))
 end
 
 local function compute_translation_axis_length(frame, pivot)
   local camera_position = hg.GetT(frame.camera_world)
   local distance = hg.Len(camera_position - pivot)
   return hg.Clamp(distance * translation_axis_length_factor, translation_axis_min_length, translation_axis_max_length)
+end
+
+local function compute_translation_plane_metrics(axis_length)
+  local plane_size = axis_length * translation_plane_size_factor
+  local plane_offset = axis_length * translation_plane_offset_factor
+  return plane_size, plane_offset
 end
 
 local function project_world_to_screen(frame, world_position)
@@ -315,15 +422,15 @@ end
 local function intersect_ray_with_plane(ray_origin, ray_direction, plane_point, plane_normal)
   local denominator = hg.Dot(ray_direction, plane_normal)
   if math.abs(denominator) < ray_epsilon then
-    return false, nil
+    return false, nil, nil
   end
 
   local hit_distance = hg.Dot(plane_point - ray_origin, plane_normal) / denominator
   if hit_distance < 0.0 then
-    return false, nil
+    return false, nil, nil
   end
 
-  return true, ray_origin + ray_direction * hit_distance
+  return true, ray_origin + ray_direction * hit_distance, hit_distance
 end
 
 local function compute_axis_drag_plane_normal(axis_direction, camera_forward)
@@ -386,6 +493,49 @@ local function get_translation_step(world_state)
   return step
 end
 
+local function get_translation_plane_axes(plane_definition)
+  return get_axis_direction(plane_definition.axis_a_name), get_axis_direction(plane_definition.axis_b_name)
+end
+
+local function compute_plane_handle_center(pivot, plane_definition, axis_length)
+  local plane_size, plane_offset = compute_translation_plane_metrics(axis_length)
+  local center_offset = plane_offset + plane_size * 0.5
+  local axis_a_direction, axis_b_direction = get_translation_plane_axes(plane_definition)
+
+  return pivot + axis_a_direction * center_offset + axis_b_direction * center_offset, plane_size
+end
+
+local function pick_translation_plane(frame, pivot, axis_length, ray_origin, ray_direction)
+  local hovered_plane_name = nil
+  local nearest_hit_distance = nil
+
+  for index = 1, #translation_plane_definitions do
+    local plane_definition = translation_plane_definitions[index]
+    local axis_a_direction, axis_b_direction = get_translation_plane_axes(plane_definition)
+    local plane_size, plane_offset = compute_translation_plane_metrics(axis_length)
+    local plane_normal = get_axis_direction(plane_definition.normal_axis_name)
+    local hit_ok
+    local hit_position
+    local hit_distance
+    hit_ok, hit_position, hit_distance = intersect_ray_with_plane(ray_origin, ray_direction, pivot, plane_normal)
+
+    if hit_ok then
+      local delta = hit_position - pivot
+      local axis_a_value = hg.Dot(delta, axis_a_direction)
+      local axis_b_value = hg.Dot(delta, axis_b_direction)
+      local within_a = axis_a_value >= plane_offset and axis_a_value <= plane_offset + plane_size
+      local within_b = axis_b_value >= plane_offset and axis_b_value <= plane_offset + plane_size
+
+      if within_a and within_b and (nearest_hit_distance == nil or hit_distance < nearest_hit_distance) then
+        hovered_plane_name = plane_definition.name
+        nearest_hit_distance = hit_distance
+      end
+    end
+  end
+
+  return hovered_plane_name
+end
+
 local function solve_axis_drag_translation(drag_state, ray_origin, ray_direction, step)
   local hit_ok
   local hit_position
@@ -399,31 +549,70 @@ local function solve_axis_drag_translation(drag_state, ray_origin, ray_direction
   end
 
   local axis_scalar = hg.Dot(hit_position - drag_state.axis_origin, drag_state.axis_direction)
-  local dragged_axis_value = get_axis_value_from_translation(drag_state.start_local_translation, drag_state.axis_name) +
+  local dragged_axis_value = get_axis_value_from_translation(drag_state.start_local_translation, drag_state.handle_name) +
     (axis_scalar - drag_state.start_axis_scalar)
   local snapped_axis_value = snap_to_nearest_step(dragged_axis_value, step)
 
-  return true, apply_axis_value_to_translation(drag_state.start_local_translation, drag_state.axis_name, snapped_axis_value)
+  return true, apply_axis_value_to_translation(drag_state.start_local_translation, drag_state.handle_name, snapped_axis_value)
+end
+
+local function solve_plane_drag_translation(drag_state, ray_origin, ray_direction, step)
+  local hit_ok
+  local hit_position
+  hit_ok, hit_position = intersect_ray_with_plane(
+    ray_origin,
+    ray_direction,
+    drag_state.axis_origin,
+    drag_state.plane_normal)
+  if not hit_ok then
+    return false, nil
+  end
+
+  local delta = hit_position - drag_state.start_hit_position
+  local updated_translation = copy_vec3(drag_state.start_local_translation)
+
+  for index = 1, #drag_state.axis_names do
+    local axis_name = drag_state.axis_names[index]
+    local axis_direction = get_axis_direction(axis_name)
+    local axis_delta = hg.Dot(delta, axis_direction)
+    local axis_value = get_axis_value_from_translation(drag_state.start_local_translation, axis_name) + axis_delta
+    updated_translation = apply_axis_value_to_translation(
+      updated_translation,
+      axis_name,
+      snap_to_nearest_step(axis_value, step))
+  end
+
+  return true, updated_translation
+end
+
+local function translations_match(lhs, rhs)
+  return math.abs(lhs.x - rhs.x) <= ray_epsilon and
+    math.abs(lhs.y - rhs.y) <= ray_epsilon and
+    math.abs(lhs.z - rhs.z) <= ray_epsilon
 end
 
 local function cancel_translation_drag(translation_state)
-  translation_state.active_axis_name = nil
+  translation_state.active_handle_kind = nil
+  translation_state.active_handle_name = nil
   translation_state.drag = {
     active = false,
-    axis_name = nil,
+    handle_kind = nil,
+    handle_name = nil,
     box_index = nil,
     cell_name = nil,
     axis_origin = hg.Vec3(0.0, 0.0, 0.0),
     axis_direction = hg.Vec3(0.0, 0.0, 0.0),
+    axis_names = {},
     plane_normal = hg.Vec3(0.0, 1.0, 0.0),
     start_axis_scalar = 0.0,
+    start_hit_position = hg.Vec3(0.0, 0.0, 0.0),
     start_local_translation = hg.Vec3(0.0, 0.0, 0.0),
     last_translation = hg.Vec3(0.0, 0.0, 0.0),
     had_translation_change = false
   }
 end
 
-local function begin_translation_drag(frame, translation_state, axis_definition, active_cell, selected_box, selected_box_index, pivot)
+local function begin_axis_drag(frame, translation_state, axis_definition, active_cell, selected_box, selected_box_index, pivot)
   local plane_ok
   local plane_normal
   plane_ok, plane_normal = compute_axis_drag_plane_normal(axis_definition.direction, frame.camera_forward)
@@ -446,16 +635,20 @@ local function begin_translation_drag(frame, translation_state, axis_definition,
     return false
   end
 
-  translation_state.active_axis_name = axis_definition.name
+  translation_state.active_handle_kind = "axis"
+  translation_state.active_handle_name = axis_definition.name
   translation_state.drag = {
     active = true,
-    axis_name = axis_definition.name,
+    handle_kind = "axis",
+    handle_name = axis_definition.name,
     box_index = selected_box_index,
     cell_name = active_cell.name,
     axis_origin = copy_vec3(pivot),
     axis_direction = copy_vec3(axis_definition.direction),
+    axis_names = {axis_definition.name},
     plane_normal = plane_normal,
     start_axis_scalar = hg.Dot(hit_position - pivot, axis_definition.direction),
+    start_hit_position = copy_vec3(hit_position),
     start_local_translation = copy_vec3(selected_box.transform.translation),
     last_translation = copy_vec3(selected_box.transform.translation),
     had_translation_change = false
@@ -464,58 +657,78 @@ local function begin_translation_drag(frame, translation_state, axis_definition,
   return true
 end
 
-local function update_translation_axis_nodes(axis_nodes, pivot, axis_definition, axis_length, axis_name, hovered_axis_name, active_axis_name)
-  local is_highlighted = hovered_axis_name == axis_name or active_axis_name == axis_name
-  local thickness = is_highlighted and translation_axis_active_thickness or translation_axis_base_thickness
-  local axis_position = pivot + axis_definition.direction * (axis_length * 0.5)
-
-  set_line_transform(
-    axis_nodes.base:GetTransform(),
-    axis_position,
-    axis_definition.rotation,
-    axis_length,
-    thickness)
-  set_line_transform(
-    axis_nodes.active:GetTransform(),
-    axis_position,
-    axis_definition.rotation,
-    axis_length,
-    translation_axis_active_thickness)
-
-  if is_highlighted then
-    axis_nodes.base:Disable()
-    axis_nodes.active:Enable()
-  else
-    axis_nodes.base:Enable()
-    axis_nodes.active:Disable()
+local function begin_plane_drag(frame, translation_state, plane_definition, active_cell, selected_box, selected_box_index, pivot)
+  local ray_ok
+  local ray_origin
+  local ray_direction
+  ray_ok, ray_origin, ray_direction = ground_plane.screen_to_world_ray(frame, frame.mouse:X(), frame.mouse:Y())
+  if not ray_ok then
+    return false
   end
+
+  local plane_normal = get_axis_direction(plane_definition.normal_axis_name)
+  local hit_ok
+  local hit_position
+  hit_ok, hit_position = intersect_ray_with_plane(ray_origin, ray_direction, pivot, plane_normal)
+  if not hit_ok then
+    return false
+  end
+
+  translation_state.active_handle_kind = "plane"
+  translation_state.active_handle_name = plane_definition.name
+  translation_state.drag = {
+    active = true,
+    handle_kind = "plane",
+    handle_name = plane_definition.name,
+    box_index = selected_box_index,
+    cell_name = active_cell.name,
+    axis_origin = copy_vec3(pivot),
+    axis_direction = hg.Vec3(0.0, 0.0, 0.0),
+    axis_names = {plane_definition.axis_a_name, plane_definition.axis_b_name},
+    plane_normal = copy_vec3(plane_normal),
+    start_axis_scalar = 0.0,
+    start_hit_position = copy_vec3(hit_position),
+    start_local_translation = copy_vec3(selected_box.transform.translation),
+    last_translation = copy_vec3(selected_box.transform.translation),
+    had_translation_change = false
+  }
+
+  return true
 end
 
-local function set_translation_nodes_enabled(translation_state, is_enabled)
-  for axis_name, axis_nodes in pairs(translation_state.axis_nodes) do
-    if is_enabled then
-      if translation_state.hovered_axis_name == axis_name or translation_state.active_axis_name == axis_name then
-        axis_nodes.base:Disable()
-        axis_nodes.active:Enable()
-      else
-        axis_nodes.base:Enable()
-        axis_nodes.active:Disable()
-      end
-    else
-      axis_nodes.base:Disable()
-      axis_nodes.active:Disable()
-    end
-  end
+local function update_axis_handle_nodes(bundle, pivot, axis_definition, axis_length)
+  local axis_position = pivot + axis_definition.direction * (axis_length * 0.5)
+  local base_scale = hg.Vec3(axis_length, translation_axis_base_thickness, translation_axis_base_thickness)
+  local active_scale = hg.Vec3(axis_length, translation_axis_active_thickness, translation_axis_active_thickness)
+
+  set_box_transform(bundle.base:GetTransform(), axis_position, axis_definition.rotation, base_scale)
+  set_box_transform(bundle.active:GetTransform(), axis_position, axis_definition.rotation, active_scale)
+  set_box_transform(bundle.xray_base:GetTransform(), axis_position, axis_definition.rotation, base_scale)
+  set_box_transform(bundle.xray_active:GetTransform(), axis_position, axis_definition.rotation, active_scale)
+end
+
+local function update_plane_handle_nodes(bundle, pivot, plane_definition, axis_length)
+  local plane_center
+  local plane_size
+  plane_center, plane_size = compute_plane_handle_center(pivot, plane_definition, axis_length)
+  local scale = hg.Vec3(plane_size, translation_plane_thickness, plane_size)
+  local active_scale = hg.Vec3(plane_size, translation_plane_thickness * 1.2, plane_size)
+
+  set_box_transform(bundle.base:GetTransform(), plane_center, plane_definition.rotation, scale)
+  set_box_transform(bundle.active:GetTransform(), plane_center, plane_definition.rotation, active_scale)
+  set_box_transform(bundle.xray_base:GetTransform(), plane_center, plane_definition.rotation, scale)
+  set_box_transform(bundle.xray_active:GetTransform(), plane_center, plane_definition.rotation, active_scale)
 end
 
 function gizmos.attach(app)
   local scene = app.scene.handle
   local line_ref = app.render.line_ref
-  local grid_material = create_material(app, 92, 98, 108)
-  local x_axis_material = create_material(app, 176, 72, 72)
-  local z_axis_material = create_material(app, 72, 120, 176)
-  local placement_cursor_material = create_material(app, 212, 56, 56)
-  local translation_active_material = create_material(app, 244, 212, 122)
+  local grid_material = create_material(app, {92, 98, 108})
+  local x_axis_material = create_material(app, {176, 72, 72})
+  local z_axis_material = create_material(app, {72, 120, 176})
+  local placement_cursor_material = create_material(app, {212, 56, 56})
+  local translation_active_rgb = {244, 212, 122}
+  local translation_active_xray_rgb = darken_rgb(translation_active_rgb, translation_xray_darken_factor)
   local grid_x_nodes
   local grid_z_nodes
   grid_x_nodes, grid_z_nodes = create_grid_nodes(
@@ -526,15 +739,52 @@ function gizmos.attach(app)
     z_axis_material)
   local placement_cursor_nodes = create_square_outline_nodes(scene, line_ref, placement_cursor_material)
 
-  local translation_axis_nodes = {}
+  local axis_nodes = {}
   for index = 1, #translation_axis_definitions do
     local axis_definition = translation_axis_definitions[index]
-    translation_axis_nodes[axis_definition.name] = create_translation_axis_nodes(
-      scene,
-      line_ref,
-      create_material(app, axis_definition.base_rgb[1], axis_definition.base_rgb[2], axis_definition.base_rgb[3]),
-      translation_active_material)
-    translation_axis_nodes[axis_definition.name].base:Disable()
+    axis_nodes[axis_definition.name] = create_handle_node_bundle(scene, line_ref, {
+      base = create_material(app, axis_definition.base_rgb),
+      active = create_material(app, translation_active_rgb),
+      xray_base = create_material(app, darken_rgb(axis_definition.base_rgb, translation_xray_darken_factor), {
+        alpha = translation_xray_alpha,
+        blend_mode = hg.BM_Alpha,
+        depth_test = hg.DT_Greater,
+        write_z = false
+      }),
+      xray_active = create_material(app, translation_active_xray_rgb, {
+        alpha = translation_xray_alpha,
+        blend_mode = hg.BM_Alpha,
+        depth_test = hg.DT_Greater,
+        write_z = false
+      })
+    })
+  end
+
+  local plane_nodes = {}
+  for index = 1, #translation_plane_definitions do
+    local plane_definition = translation_plane_definitions[index]
+    plane_nodes[plane_definition.name] = create_handle_node_bundle(scene, line_ref, {
+      base = create_material(app, plane_definition.base_rgb, {
+        face_culling = hg.FC_Disabled
+      }),
+      active = create_material(app, translation_active_rgb, {
+        face_culling = hg.FC_Disabled
+      }),
+      xray_base = create_material(app, darken_rgb(plane_definition.base_rgb, translation_xray_darken_factor), {
+        alpha = translation_xray_alpha,
+        blend_mode = hg.BM_Alpha,
+        depth_test = hg.DT_Greater,
+        write_z = false,
+        face_culling = hg.FC_Disabled
+      }),
+      xray_active = create_material(app, translation_active_xray_rgb, {
+        alpha = translation_xray_alpha,
+        blend_mode = hg.BM_Alpha,
+        depth_test = hg.DT_Greater,
+        write_z = false,
+        face_culling = hg.FC_Disabled
+      })
+    })
   end
 
   app.gizmos = {
@@ -549,12 +799,16 @@ function gizmos.attach(app)
     },
     translation = {
       visible = false,
+      xray_enabled = true,
       pivot = hg.Vec3(0.0, 0.0, 0.0),
       axis_length = translation_axis_min_length,
-      hovered_axis_name = nil,
-      active_axis_name = nil,
+      hovered_handle_kind = nil,
+      hovered_handle_name = nil,
+      active_handle_kind = nil,
+      active_handle_name = nil,
       left_button_was_down = false,
-      axis_nodes = translation_axis_nodes,
+      axis_nodes = axis_nodes,
+      plane_nodes = plane_nodes,
       drag = {}
     }
   }
@@ -593,9 +847,9 @@ function gizmos.handle_interaction(app, frame)
 
   if not target_is_editable then
     translation_state.visible = false
-    translation_state.hovered_axis_name = nil
+    translation_state.hovered_handle_kind = nil
+    translation_state.hovered_handle_name = nil
     cancel_translation_drag(translation_state)
-    set_translation_nodes_enabled(translation_state, false)
     translation_state.left_button_was_down = left_button_down
     return false, nil
   end
@@ -620,34 +874,42 @@ function gizmos.handle_interaction(app, frame)
     if ray_ok then
       local translation_ok
       local updated_translation
-      translation_ok, updated_translation = solve_axis_drag_translation(
-        translation_state.drag,
-        ray_origin,
-        ray_direction,
-        get_translation_step(world_state))
 
-      if translation_ok then
-        local current_axis_value = get_axis_value_from_translation(translation_state.drag.last_translation, translation_state.drag.axis_name)
-        local updated_axis_value = get_axis_value_from_translation(updated_translation, translation_state.drag.axis_name)
+      if translation_state.drag.handle_kind == "plane" then
+        translation_ok, updated_translation = solve_plane_drag_translation(
+          translation_state.drag,
+          ray_origin,
+          ray_direction,
+          get_translation_step(world_state))
+      else
+        translation_ok, updated_translation = solve_axis_drag_translation(
+          translation_state.drag,
+          ray_origin,
+          ray_direction,
+          get_translation_step(world_state))
+      end
 
-        if math.abs(updated_axis_value - current_axis_value) > ray_epsilon then
-          translation_state.drag.last_translation = updated_translation
-          translation_state.drag.had_translation_change = true
-          action = {
-            kind = "gizmo_translate_selected_box",
-            translation = updated_translation,
-            changed = true,
-            finalize = false,
-            had_translation_change = true
-          }
-        end
+      if translation_ok and not translations_match(updated_translation, translation_state.drag.last_translation) then
+        translation_state.drag.last_translation = updated_translation
+        translation_state.drag.had_translation_change = true
+        action = {
+          kind = "gizmo_translate_selected_box",
+          translation = updated_translation,
+          changed = true,
+          finalize = false,
+          had_translation_change = true
+        }
       end
     end
+
+    translation_state.hovered_handle_kind = translation_state.active_handle_kind
+    translation_state.hovered_handle_name = translation_state.active_handle_name
 
     if released_this_frame then
       local had_translation_change = translation_state.drag.had_translation_change
       cancel_translation_drag(translation_state)
-      translation_state.hovered_axis_name = nil
+      translation_state.hovered_handle_kind = nil
+      translation_state.hovered_handle_name = nil
       translation_state.left_button_was_down = left_button_down
 
       if action ~= nil then
@@ -663,34 +925,69 @@ function gizmos.handle_interaction(app, frame)
       }
     end
 
-    translation_state.hovered_axis_name = translation_state.active_axis_name
     translation_state.left_button_was_down = left_button_down
     return true, action
   end
 
   if hg.ImGuiWantCaptureMouse() then
-    translation_state.hovered_axis_name = nil
+    translation_state.hovered_handle_kind = nil
+    translation_state.hovered_handle_name = nil
     translation_state.left_button_was_down = left_button_down
     return false, nil
   end
 
-  translation_state.hovered_axis_name = pick_translation_axis(
-    frame,
-    translation_state.pivot,
-    translation_state.axis_length,
-    frame.mouse:X(),
-    frame.mouse:Y())
+  local ray_ok
+  local ray_origin
+  local ray_direction
+  ray_ok, ray_origin, ray_direction = ground_plane.screen_to_world_ray(frame, frame.mouse:X(), frame.mouse:Y())
 
-  if clicked_this_frame and translation_state.hovered_axis_name ~= nil then
-    local axis_definition = translation_axis_by_name[translation_state.hovered_axis_name]
-    local started = begin_translation_drag(
+  local hovered_handle_kind = nil
+  local hovered_handle_name = nil
+
+  if ray_ok then
+    hovered_handle_name = pick_translation_plane(frame, pivot, translation_state.axis_length, ray_origin, ray_direction)
+    if hovered_handle_name ~= nil then
+      hovered_handle_kind = "plane"
+    end
+  end
+
+  if hovered_handle_name == nil then
+    hovered_handle_name = pick_translation_axis(
       frame,
-      translation_state,
-      axis_definition,
-      active_cell,
-      selected_box,
-      selected_box_index,
-      pivot)
+      pivot,
+      translation_state.axis_length,
+      frame.mouse:X(),
+      frame.mouse:Y())
+    if hovered_handle_name ~= nil then
+      hovered_handle_kind = "axis"
+    end
+  end
+
+  translation_state.hovered_handle_kind = hovered_handle_kind
+  translation_state.hovered_handle_name = hovered_handle_name
+
+  if clicked_this_frame and hovered_handle_name ~= nil then
+    local started = false
+
+    if hovered_handle_kind == "plane" then
+      started = begin_plane_drag(
+        frame,
+        translation_state,
+        translation_plane_by_name[hovered_handle_name],
+        active_cell,
+        selected_box,
+        selected_box_index,
+        pivot)
+    else
+      started = begin_axis_drag(
+        frame,
+        translation_state,
+        translation_axis_by_name[hovered_handle_name],
+        active_cell,
+        selected_box,
+        selected_box_index,
+        pivot)
+    end
 
     translation_state.left_button_was_down = left_button_down
 
@@ -746,21 +1043,31 @@ function gizmos.update(app, frame)
   selected_box, _, active_cell = get_active_selected_box(world_state)
   local translation_visible = translation_state.visible and selected_box ~= nil and active_cell ~= nil
 
-  if translation_visible then
-    for index = 1, #translation_axis_definitions do
-      local axis_definition = translation_axis_definitions[index]
-      update_translation_axis_nodes(
-        translation_state.axis_nodes[axis_definition.name],
-        translation_state.pivot,
-        axis_definition,
-        translation_state.axis_length,
-        axis_definition.name,
-        translation_state.hovered_axis_name,
-        translation_state.active_axis_name)
+  for index = 1, #translation_axis_definitions do
+    local axis_definition = translation_axis_definitions[index]
+    local bundle = translation_state.axis_nodes[axis_definition.name]
+    if translation_visible then
+      update_axis_handle_nodes(bundle, translation_state.pivot, axis_definition, translation_state.axis_length)
     end
+
+    local is_highlighted = translation_state.hovered_handle_kind == "axis" and
+      translation_state.hovered_handle_name == axis_definition.name or
+      translation_state.active_handle_kind == "axis" and translation_state.active_handle_name == axis_definition.name
+    set_handle_node_bundle_visibility(bundle, translation_visible, is_highlighted, translation_state.xray_enabled)
   end
 
-  set_translation_nodes_enabled(translation_state, translation_visible)
+  for index = 1, #translation_plane_definitions do
+    local plane_definition = translation_plane_definitions[index]
+    local bundle = translation_state.plane_nodes[plane_definition.name]
+    if translation_visible then
+      update_plane_handle_nodes(bundle, translation_state.pivot, plane_definition, translation_state.axis_length)
+    end
+
+    local is_highlighted = translation_state.hovered_handle_kind == "plane" and
+      translation_state.hovered_handle_name == plane_definition.name or
+      translation_state.active_handle_kind == "plane" and translation_state.active_handle_name == plane_definition.name
+    set_handle_node_bundle_visibility(bundle, translation_visible, is_highlighted, translation_state.xray_enabled)
+  end
 end
 
 function gizmos.debug_solve_axis_translation(start_local_translation, axis_name, axis_origin, camera_forward, start_ray_origin, start_ray_direction, current_ray_origin, current_ray_direction, step)
@@ -784,16 +1091,40 @@ function gizmos.debug_solve_axis_translation(start_local_translation, axis_name,
   end
 
   local drag_state = {
-    axis_name = axis_name,
+    handle_name = axis_name,
     axis_origin = copy_vec3(axis_origin),
     axis_direction = copy_vec3(axis_definition.direction),
     plane_normal = plane_normal,
     start_axis_scalar = hg.Dot(start_hit - axis_origin, axis_definition.direction),
-    start_local_translation = copy_vec3(start_local_translation),
-    last_translation = copy_vec3(start_local_translation)
+    start_local_translation = copy_vec3(start_local_translation)
   }
 
   return solve_axis_drag_translation(drag_state, current_ray_origin, current_ray_direction, step)
+end
+
+function gizmos.debug_solve_plane_translation(start_local_translation, plane_name, axis_origin, start_ray_origin, start_ray_direction, current_ray_origin, current_ray_direction, step)
+  local plane_definition = translation_plane_by_name[plane_name]
+  if plane_definition == nil then
+    return false, nil
+  end
+
+  local plane_normal = get_axis_direction(plane_definition.normal_axis_name)
+  local start_hit_ok
+  local start_hit
+  start_hit_ok, start_hit = intersect_ray_with_plane(start_ray_origin, start_ray_direction, axis_origin, plane_normal)
+  if not start_hit_ok then
+    return false, nil
+  end
+
+  local drag_state = {
+    axis_origin = copy_vec3(axis_origin),
+    axis_names = {plane_definition.axis_a_name, plane_definition.axis_b_name},
+    plane_normal = copy_vec3(plane_normal),
+    start_hit_position = copy_vec3(start_hit),
+    start_local_translation = copy_vec3(start_local_translation)
+  }
+
+  return solve_plane_drag_translation(drag_state, current_ray_origin, current_ray_direction, step)
 end
 
 return gizmos
