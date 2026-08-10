@@ -5,7 +5,7 @@ bounds -40 -6 -20 46 48 100
 cell_size 1
 meshing_mode marching_tetrahedra
 
-box add ground_slab 0 -2 40 32 2 52
+box add ground_slab 0 -2 0 50 2 50
 box add left_tower -36 18 18 7 18 7
 box add left_catwalk_mass -29 30 10 4 2 4
 box add right_tower 21 22 15 10 22 12

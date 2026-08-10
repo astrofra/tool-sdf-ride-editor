@@ -59,11 +59,14 @@ Out of scope for the first useful version:
 - arbitrary box rotation;
 - hierarchy editing inside the cell;
 - modifier editing UI;
-- undo/redo;
 - full generated mesh rebuild pipeline;
 - final gizmo polish;
 - bulk scene validation tools;
 - cross-cell simultaneous editing.
+
+Note:
+
+- undo/redo is now covered by [`documentation/SDF_Cell_Edit_Commit_History_Decision.md`](./SDF_Cell_Edit_Commit_History_Decision.md) because the editor reached the point where save semantics and edit granularity had to be stabilized together.
 
 Those can come later once the first local box workflow is stable.
 
@@ -310,6 +313,14 @@ Recommended mutation flow:
 6. restore selection if the target still exists.
 
 This keeps the preview deterministic and avoids hidden divergence between runtime nodes and authored data.
+
+The current implementation refines this further:
+
+1. validate the edit;
+2. commit it immediately;
+3. save the `.sdfscene` immediately;
+4. capture before/after history snapshots;
+5. rebuild the active cell preview from saved state.
 
 ## Logging Expectations
 

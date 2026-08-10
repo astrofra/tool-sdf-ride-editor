@@ -1,6 +1,7 @@
 local hg = require("harfang")
 local sdf = require("sdf-generator")
 local log_panel = require("editor.log_panel")
+local sdf_history = require("editor.sdf_history")
 local sdf_selection = require("editor.sdf_selection")
 local sdf_world = require("editor.sdf_world")
 local sdf_cell_factory = require("editor.sdf_cell_factory")
@@ -30,6 +31,11 @@ local default_new_box_half_extent_ratio = 0.05
 local minimum_box_offset = 1.0
 local create_preview_nodes_for_cell
 local rebuild_cell_preview
+local update_selected_box
+local log_selected_box_state
+local replace_cell_boxes_with_runtime_ids
+local replace_cell_scene_file
+local set_active_cell_index
 
 local function file_exists(path)
   local handle = io.open(path, "rb")
@@ -39,6 +45,38 @@ local function file_exists(path)
 
   handle:close()
   return true
+end
+
+local function read_text_file(path)
+  local handle = io.open(path, "rb")
+  if handle == nil then
+    return nil, string.format("Failed to open %s for reading", path)
+  end
+
+  local content = handle:read("*a")
+  handle:close()
+
+  if content == nil then
+    return nil, string.format("Failed to read %s", path)
+  end
+
+  return content, nil
+end
+
+local function write_text_file(path, content)
+  local handle = io.open(path, "wb")
+  if handle == nil then
+    return false, string.format("Failed to open %s for writing", path)
+  end
+
+  local saved = handle:write(content)
+  handle:close()
+
+  if not saved then
+    return false, string.format("Failed to write %s", path)
+  end
+
+  return true, nil
 end
 
 local function normalize_path(path)
@@ -239,6 +277,54 @@ local function copy_vec3(vec3)
   return hg.Vec3(vec3.x, vec3.y, vec3.z)
 end
 
+local function copy_runtime_id_list(box_runtime_ids)
+  local copy = {}
+
+  if box_runtime_ids == nil then
+    return copy
+  end
+
+  for index = 1, #box_runtime_ids do
+    copy[index] = box_runtime_ids[index]
+  end
+
+  return copy
+end
+
+local function allocate_box_runtime_id(state)
+  local runtime_id = state.next_box_runtime_id
+  state.next_box_runtime_id = state.next_box_runtime_id + 1
+  return runtime_id
+end
+
+local function allocate_box_runtime_id_list(state, box_count)
+  local runtime_ids = {}
+
+  for index = 1, box_count do
+    runtime_ids[index] = allocate_box_runtime_id(state)
+  end
+
+  return runtime_ids
+end
+
+local function build_runtime_id_list_with_appended_id(box_runtime_ids, appended_runtime_id)
+  local updated_runtime_ids = copy_runtime_id_list(box_runtime_ids)
+  updated_runtime_ids[#updated_runtime_ids + 1] = appended_runtime_id
+  return updated_runtime_ids
+end
+
+local function build_runtime_id_list_without_index(box_runtime_ids, removed_index)
+  local filtered_runtime_ids = {}
+
+  for index = 1, #box_runtime_ids do
+    if index ~= removed_index then
+      filtered_runtime_ids[#filtered_runtime_ids + 1] = box_runtime_ids[index]
+    end
+  end
+
+  return filtered_runtime_ids
+end
+
 local function assign_vec3(target, source)
   target.x = source.x
   target.y = source.y
@@ -264,6 +350,10 @@ local function clear_box_inspector(state)
   state.inspector.op_index = 0
   state.inspector.translation = hg.Vec3(0.0, 0.0, 0.0)
   state.inspector.half_size = hg.Vec3(1.0, 1.0, 1.0)
+
+  if state.inspector_ui ~= nil then
+    state.inspector_ui.name_input_was_active = false
+  end
 end
 
 local function get_selected_box_index(state)
@@ -281,6 +371,20 @@ local function clear_selected_box_index(state)
 
   state.selection.active_box_index = nil
   clear_box_inspector(state)
+end
+
+local function set_selected_box_index_silent(state, new_index)
+  if state.selection == nil then
+    return
+  end
+
+  state.selection.active_box_index = new_index
+
+  if new_index == nil then
+    clear_box_inspector(state)
+  elseif state.inspector_ui ~= nil then
+    state.inspector_ui.name_input_was_active = false
+  end
 end
 
 local function get_selected_box(state)
@@ -482,6 +586,77 @@ local function box_name_exists(boxes, candidate_name)
   return has_box_name_conflict(boxes, nil, candidate_name)
 end
 
+local function validate_box_name_update(active_cell, selected_box_index, candidate_name)
+  local normalized_name = trim_string(candidate_name)
+  if normalized_name == "" then
+    return false, "Box name cannot be empty"
+  end
+
+  if has_box_name_conflict(active_cell.scene_file.scene.boxes, selected_box_index, normalized_name) then
+    return false, string.format("Box name %s already exists in %s", normalized_name, active_cell.name)
+  end
+
+  return true, nil
+end
+
+local function commit_selected_box_from_inspector(app, state, box_data, log_validation_error, revert_on_validation_error)
+  local selected_box
+  local selected_box_index
+  local active_cell
+  selected_box, selected_box_index, active_cell = get_selected_box(state)
+
+  if selected_box == nil or selected_box_index == nil or active_cell == nil then
+    if log_validation_error and app ~= nil then
+      log_panel.error(app, "Update box failed: No box is selected")
+    end
+    return false, "No box is selected"
+  end
+
+  local normalized_box_data
+  local normalize_error
+  normalized_box_data, normalize_error = normalize_box_update_input(box_data, selected_box)
+  if normalized_box_data == nil then
+    if log_validation_error and app ~= nil then
+      log_panel.error(app, string.format("Update box failed: %s", normalize_error))
+    end
+    if revert_on_validation_error then
+      reset_inspector_to_selected_box(state)
+    end
+    return false, normalize_error
+  end
+
+  local valid_name, name_error = validate_box_name_update(active_cell, selected_box_index, normalized_box_data.name)
+  if not valid_name then
+    if log_validation_error and app ~= nil then
+      log_panel.error(app, string.format("Update box failed: %s", name_error))
+    end
+    if revert_on_validation_error then
+      reset_inspector_to_selected_box(state)
+    end
+    return false, name_error
+  end
+
+  local ok, result = update_selected_box(app, state, box_data)
+  if not ok then
+    if log_validation_error and app ~= nil then
+      log_panel.error(app, string.format("Update box failed: %s", result))
+    end
+    if revert_on_validation_error then
+      reset_inspector_to_selected_box(state)
+    end
+    return false, result
+  end
+
+  reset_inspector_to_selected_box(state)
+
+  if not result.no_changes and app ~= nil then
+    local log_prefix = result.half_size_was_clamped and "Updated box (half-size clamped)" or "Updated box"
+    log_selected_box_state(app, state, log_prefix)
+  end
+
+  return true, result
+end
+
 local function allocate_unique_box_name(boxes, preferred_name)
   local base_name = trim_string(preferred_name)
   if base_name == "" then
@@ -551,7 +726,7 @@ local function make_duplicate_box(boxes, source_box)
   return duplicate_box
 end
 
-local function log_selected_box_state(app, state, prefix)
+log_selected_box_state = function(app, state, prefix)
   local selected_box
   local selected_box_index
   local active_cell
@@ -652,7 +827,7 @@ local function update_preview_visibility(state)
   end
 end
 
-local function set_active_cell_index(state, new_index, app, log_prefix)
+set_active_cell_index = function(state, new_index, app, log_prefix, suppress_log)
   local cell_count = #state.cells
   if cell_count == 0 then
     state.active_cell_index = nil
@@ -682,7 +857,7 @@ local function set_active_cell_index(state, new_index, app, log_prefix)
   state.delete_cell_confirmation_armed = false
   update_preview_visibility(state)
 
-  if app ~= nil and previous_index ~= new_index then
+  if app ~= nil and previous_index ~= new_index and not suppress_log then
     log_active_cell_state(app, state, log_prefix or "Active cell")
   end
 end
@@ -785,6 +960,7 @@ local function make_cell_state(cell_document)
     scene_file = nil,
     load_error = nil,
     box_count = 0,
+    box_runtime_ids = {},
     bounds_span = nil,
     bounds_policy_overflow = nil,
     exceeds_world_bounds_policy = false,
@@ -810,6 +986,7 @@ local function append_cell_state(state, cell_document)
   state.cells[#state.cells + 1] = cell_state
 
   if cell_state.scene_file ~= nil then
+    cell_state.box_runtime_ids = allocate_box_runtime_id_list(state, cell_state.box_count)
     state.loaded_cell_count = state.loaded_cell_count + 1
     state.total_box_count = state.total_box_count + cell_state.box_count
     update_cell_bounds_policy_diagnostics(state, cell_state)
@@ -911,12 +1088,169 @@ local function build_box_list_with_appended_box(boxes, appended_box)
   return updated_boxes
 end
 
+local function compute_box_update_action_kind(selected_box, normalized_box_data)
+  local changed_name = selected_box.name ~= normalized_box_data.name
+  local changed_op = selected_box.op ~= normalized_box_data.op
+  local changed_translation = not vec3_approx_equal(selected_box.transform.translation, normalized_box_data.translation)
+  local changed_half_size = not vec3_approx_equal(selected_box.half_size, normalized_box_data.half_size)
+  local parts = {}
+
+  if changed_name then
+    parts[#parts + 1] = "name"
+  end
+
+  if changed_op then
+    parts[#parts + 1] = "op"
+  end
+
+  if changed_translation then
+    parts[#parts + 1] = "translation"
+  end
+
+  if changed_half_size then
+    parts[#parts + 1] = "half_size"
+  end
+
+  return "box_edit:" .. table.concat(parts, "+")
+end
+
+local function find_cell_index_by_identity(state, cell_name, scene_path)
+  for index = 1, #state.cells do
+    local cell_state = state.cells[index]
+    if cell_state.name == cell_name or cell_state.scene_path == scene_path then
+      return index
+    end
+  end
+
+  return nil
+end
+
+local function commit_cell_edit(app, state, params)
+  local active_cell = params.active_cell or get_active_cell(state)
+  if active_cell == nil then
+    return false, "No active cell is selected"
+  end
+
+  if active_cell.scene_file == nil then
+    return false, active_cell.load_error or string.format("Active cell %s is not loaded", active_cell.name)
+  end
+
+  local before_scene_text, before_scene_error = read_text_file(active_cell.scene_path)
+  if before_scene_text == nil then
+    return false, before_scene_error
+  end
+
+  local original_boxes = clone_box_list(active_cell.scene_file.scene.boxes)
+  local original_box_runtime_ids = copy_runtime_id_list(active_cell.box_runtime_ids)
+  local original_selected_box_index = get_selected_box_index(state)
+
+  replace_cell_boxes_with_runtime_ids(state, active_cell, params.new_boxes, params.new_box_runtime_ids)
+  set_selected_box_index_silent(state, params.after_selected_box_index)
+
+  local scene_saved, scene_save_error = sdf.save_scene_file(active_cell.scene_file, active_cell.scene_path)
+  if not scene_saved then
+    replace_cell_boxes_with_runtime_ids(state, active_cell, original_boxes, original_box_runtime_ids)
+    set_selected_box_index_silent(state, original_selected_box_index)
+    rebuild_cell_preview(app, state, active_cell)
+    return false, scene_save_error
+  end
+
+  local after_scene_text, after_scene_error = read_text_file(active_cell.scene_path)
+  if after_scene_text == nil then
+    replace_cell_boxes_with_runtime_ids(state, active_cell, original_boxes, original_box_runtime_ids)
+    set_selected_box_index_silent(state, original_selected_box_index)
+    local restored, restored_error = sdf.save_scene_file(active_cell.scene_file, active_cell.scene_path)
+    if not restored then
+      return false, string.format("%s (restore failed: %s)", after_scene_error, tostring(restored_error))
+    end
+    rebuild_cell_preview(app, state, active_cell)
+    return false, after_scene_error
+  end
+
+  rebuild_cell_preview(app, state, active_cell)
+  reset_inspector_to_selected_box(state)
+
+  sdf_history.record(state.history, {
+    cell_name = active_cell.name,
+    scene_path = active_cell.scene_path,
+    action_kind = params.action_kind,
+    target_box_runtime_id = params.target_box_runtime_id,
+    description = params.description,
+    before_scene_text = before_scene_text,
+    after_scene_text = after_scene_text,
+    before_box_runtime_ids = original_box_runtime_ids,
+    after_box_runtime_ids = params.new_box_runtime_ids,
+    before_selected_box_index = original_selected_box_index,
+    after_selected_box_index = params.after_selected_box_index
+  })
+
+  return true, params.success_result
+end
+
+local function restore_history_entry(app, state, entry, use_after_snapshot)
+  local cell_index = find_cell_index_by_identity(state, entry.cell_name, entry.scene_path)
+  if cell_index == nil then
+    return false, string.format("Cell %s is no longer available", entry.cell_name)
+  end
+
+  set_active_cell_index(state, cell_index, app, nil, true)
+
+  local cell_state = state.cells[cell_index]
+  local snapshot_text = use_after_snapshot and entry.after_scene_text or entry.before_scene_text
+  local runtime_ids = use_after_snapshot and entry.after_box_runtime_ids or entry.before_box_runtime_ids
+  local selected_box_index = use_after_snapshot and entry.after_selected_box_index or entry.before_selected_box_index
+
+  local saved, save_error = write_text_file(cell_state.scene_path, snapshot_text)
+  if not saved then
+    return false, save_error
+  end
+
+  local load_ok, scene_file, load_error = sdf.load_scene_file(cell_state.scene_path)
+  if not load_ok then
+    return false, load_error
+  end
+
+  replace_cell_scene_file(state, cell_state, scene_file, runtime_ids)
+  set_selected_box_index_silent(state, selected_box_index)
+  rebuild_cell_preview(app, state, cell_state)
+  update_preview_visibility(state)
+  reset_inspector_to_selected_box(state)
+
+  return true, cell_state
+end
+
 local function replace_cell_boxes(state, cell_state, new_boxes)
   local new_box_count = #new_boxes
 
   cell_state.scene_file.scene.boxes = new_boxes
+  cell_state.box_runtime_ids = copy_runtime_id_list(cell_state.box_runtime_ids)
   state.total_box_count = state.total_box_count - cell_state.box_count + new_box_count
   cell_state.box_count = new_box_count
+  update_cell_bounds_policy_diagnostics(state, cell_state)
+end
+
+replace_cell_boxes_with_runtime_ids = function(state, cell_state, new_boxes, new_box_runtime_ids)
+  local new_box_count = #new_boxes
+
+  cell_state.scene_file.scene.boxes = new_boxes
+  cell_state.box_runtime_ids = copy_runtime_id_list(new_box_runtime_ids)
+  state.total_box_count = state.total_box_count - cell_state.box_count + new_box_count
+  cell_state.box_count = new_box_count
+  update_cell_bounds_policy_diagnostics(state, cell_state)
+end
+
+replace_cell_scene_file = function(state, cell_state, scene_file, new_box_runtime_ids)
+  local new_box_count = 0
+  if scene_file ~= nil then
+    new_box_count = #scene_file.scene.boxes
+  end
+
+  state.total_box_count = state.total_box_count - cell_state.box_count + new_box_count
+  cell_state.scene_file = scene_file
+  cell_state.load_error = scene_file == nil and cell_state.load_error or nil
+  cell_state.box_count = new_box_count
+  cell_state.box_runtime_ids = copy_runtime_id_list(new_box_runtime_ids)
+  update_cell_bounds_policy_diagnostics(state, cell_state)
 end
 
 local function remove_cell_state_at_index(app, state, cell_index)
@@ -967,6 +1301,11 @@ local function make_world_state(path)
     },
     box_translation_step = default_box_translation_step,
     delete_cell_confirmation_armed = false,
+    history = sdf_history.create_state(),
+    next_box_runtime_id = 1,
+    inspector_ui = {
+      name_input_was_active = false
+    },
     materials = {}
   }
 
@@ -1095,17 +1434,6 @@ local function add_cell_at_position(app, state, world_position)
   return true, cell_name
 end
 
-local function save_active_cell_scene_file(app, state, active_cell, original_boxes)
-  local scene_saved, scene_save_error = sdf.save_scene_file(active_cell.scene_file, active_cell.scene_path)
-  if scene_saved then
-    return true, nil
-  end
-
-  replace_cell_boxes(state, active_cell, original_boxes)
-  rebuild_cell_preview(app, state, active_cell)
-  return false, scene_save_error
-end
-
 local function add_box(app, state)
   local selected_box
   local active_cell
@@ -1119,29 +1447,29 @@ local function add_box(app, state)
     return false, active_cell.load_error or string.format("Active cell %s is not loaded", active_cell.name)
   end
 
-  local original_boxes = clone_box_list(active_cell.scene_file.scene.boxes)
-  local new_box = make_default_add_box(state, original_boxes, selected_box)
-  local updated_boxes = build_box_list_with_appended_box(original_boxes, new_box)
+  local boxes = active_cell.scene_file.scene.boxes
+  local new_box = make_default_add_box(state, boxes, selected_box)
+  local updated_boxes = build_box_list_with_appended_box(boxes, new_box)
+  local new_box_runtime_id = allocate_box_runtime_id(state)
+  local updated_runtime_ids = build_runtime_id_list_with_appended_id(active_cell.box_runtime_ids, new_box_runtime_id)
   local new_box_index = #updated_boxes
 
-  replace_cell_boxes(state, active_cell, updated_boxes)
-
-  local saved, save_error = save_active_cell_scene_file(app, state, active_cell, original_boxes)
-  if not saved then
-    return false, save_error
-  end
-
-  state.selection.active_box_index = new_box_index
-  reset_inspector_to_selected_box(state)
-  rebuild_cell_preview(app, state, active_cell)
-
-  return true, {
-    box_name = new_box.name,
-    box_index = new_box_index,
-    op = new_box.op,
-    translation = copy_vec3(new_box.transform.translation),
-    half_size = copy_vec3(new_box.half_size)
-  }
+  return commit_cell_edit(app, state, {
+    active_cell = active_cell,
+    action_kind = "box_add",
+    target_box_runtime_id = new_box_runtime_id,
+    description = string.format("Added box %s in %s", new_box.name, active_cell.name),
+    new_boxes = updated_boxes,
+    new_box_runtime_ids = updated_runtime_ids,
+    after_selected_box_index = new_box_index,
+    success_result = {
+      box_name = new_box.name,
+      box_index = new_box_index,
+      op = new_box.op,
+      translation = copy_vec3(new_box.transform.translation),
+      half_size = copy_vec3(new_box.half_size)
+    }
+  })
 end
 
 local function duplicate_selected_box(app, state)
@@ -1162,33 +1490,33 @@ local function duplicate_selected_box(app, state)
     return false, "No box is selected"
   end
 
-  local original_boxes = clone_box_list(active_cell.scene_file.scene.boxes)
-  local duplicated_box = make_duplicate_box(original_boxes, selected_box)
-  local updated_boxes = build_box_list_with_appended_box(original_boxes, duplicated_box)
+  local boxes = active_cell.scene_file.scene.boxes
+  local duplicated_box = make_duplicate_box(boxes, selected_box)
+  local updated_boxes = build_box_list_with_appended_box(boxes, duplicated_box)
+  local duplicated_box_runtime_id = allocate_box_runtime_id(state)
+  local updated_runtime_ids = build_runtime_id_list_with_appended_id(active_cell.box_runtime_ids, duplicated_box_runtime_id)
   local duplicated_box_index = #updated_boxes
 
-  replace_cell_boxes(state, active_cell, updated_boxes)
-
-  local saved, save_error = save_active_cell_scene_file(app, state, active_cell, original_boxes)
-  if not saved then
-    return false, save_error
-  end
-
-  state.selection.active_box_index = duplicated_box_index
-  reset_inspector_to_selected_box(state)
-  rebuild_cell_preview(app, state, active_cell)
-
-  return true, {
-    source_box_name = selected_box.name,
-    box_name = duplicated_box.name,
-    box_index = duplicated_box_index,
-    op = duplicated_box.op,
-    translation = copy_vec3(duplicated_box.transform.translation),
-    half_size = copy_vec3(duplicated_box.half_size)
-  }
+  return commit_cell_edit(app, state, {
+    active_cell = active_cell,
+    action_kind = "box_duplicate",
+    target_box_runtime_id = duplicated_box_runtime_id,
+    description = string.format("Duplicated box %s to %s in %s", selected_box.name, duplicated_box.name, active_cell.name),
+    new_boxes = updated_boxes,
+    new_box_runtime_ids = updated_runtime_ids,
+    after_selected_box_index = duplicated_box_index,
+    success_result = {
+      source_box_name = selected_box.name,
+      box_name = duplicated_box.name,
+      box_index = duplicated_box_index,
+      op = duplicated_box.op,
+      translation = copy_vec3(duplicated_box.transform.translation),
+      half_size = copy_vec3(duplicated_box.half_size)
+    }
+  })
 end
 
-local function update_selected_box(app, state, box_data)
+update_selected_box = function(app, state, box_data)
   local selected_box
   local selected_box_index
   local active_cell
@@ -1217,12 +1545,9 @@ local function update_selected_box(app, state, box_data)
     return false, normalize_error
   end
 
-  if normalized_box_data.name == "" then
-    return false, "Box name cannot be empty"
-  end
-
-  if has_box_name_conflict(active_cell.scene_file.scene.boxes, selected_box_index, normalized_box_data.name) then
-    return false, string.format("Box name %s already exists in %s", normalized_box_data.name, active_cell.name)
+  local valid_name, name_error = validate_box_name_update(active_cell, selected_box_index, normalized_box_data.name)
+  if not valid_name then
+    return false, name_error
   end
 
   box_data.name = normalized_box_data.name
@@ -1251,26 +1576,27 @@ local function update_selected_box(app, state, box_data)
   assign_vec3(updated_box.half_size, normalized_box_data.half_size)
 
   local updated_boxes = build_box_list_with_replacement(original_boxes, selected_box_index, updated_box)
-  replace_cell_boxes(state, active_cell, updated_boxes)
+  local updated_runtime_ids = copy_runtime_id_list(active_cell.box_runtime_ids)
+  local selected_box_runtime_id = updated_runtime_ids[selected_box_index]
 
-  local scene_saved, scene_save_error = sdf.save_scene_file(active_cell.scene_file, active_cell.scene_path)
-  if not scene_saved then
-    replace_cell_boxes(state, active_cell, original_boxes)
-    rebuild_cell_preview(app, state, active_cell)
-    return false, scene_save_error
-  end
-
-  rebuild_cell_preview(app, state, active_cell)
-
-  return true, {
-    box_name = normalized_box_data.name,
-    op = normalized_box_data.op,
-    op_index = normalized_box_data.op_index,
-    translation = copy_vec3(normalized_box_data.translation),
-    half_size = copy_vec3(normalized_box_data.half_size),
-    half_size_was_clamped = normalized_box_data.half_size_was_clamped,
-    no_changes = false
-  }
+  return commit_cell_edit(app, state, {
+    active_cell = active_cell,
+    action_kind = compute_box_update_action_kind(selected_box, normalized_box_data),
+    target_box_runtime_id = selected_box_runtime_id,
+    description = string.format("Updated box %s in %s", normalized_box_data.name, active_cell.name),
+    new_boxes = updated_boxes,
+    new_box_runtime_ids = updated_runtime_ids,
+    after_selected_box_index = selected_box_index,
+    success_result = {
+      box_name = normalized_box_data.name,
+      op = normalized_box_data.op,
+      op_index = normalized_box_data.op_index,
+      translation = copy_vec3(normalized_box_data.translation),
+      half_size = copy_vec3(normalized_box_data.half_size),
+      half_size_was_clamped = normalized_box_data.half_size_was_clamped,
+      no_changes = false
+    }
+  })
 end
 
 local function delete_selected_box(app, state)
@@ -1301,19 +1627,16 @@ local function delete_selected_box(app, state)
     end
   end
 
-  replace_cell_boxes(state, active_cell, filtered_boxes)
-
-  local scene_saved, scene_save_error = sdf.save_scene_file(active_cell.scene_file, active_cell.scene_path)
-  if not scene_saved then
-    replace_cell_boxes(state, active_cell, original_boxes)
-    rebuild_cell_preview(app, state, active_cell)
-    return false, scene_save_error
-  end
-
-  clear_selected_box_index(state)
-  rebuild_cell_preview(app, state, active_cell)
-
-  return true, deleted_box_name
+  return commit_cell_edit(app, state, {
+    active_cell = active_cell,
+    action_kind = "box_delete",
+    target_box_runtime_id = active_cell.box_runtime_ids[selected_box_index],
+    description = string.format("Deleted box %s from %s", deleted_box_name, active_cell.name),
+    new_boxes = filtered_boxes,
+    new_box_runtime_ids = build_runtime_id_list_without_index(active_cell.box_runtime_ids, selected_box_index),
+    after_selected_box_index = nil,
+    success_result = deleted_box_name
+  })
 end
 
 local function delete_active_cell(app, state)
@@ -1384,6 +1707,10 @@ function sdf_scene.add_cell_at_position(app, world_position)
     return false, result
   end
 
+  if sdf_history.clear(state.history) then
+    log_panel.info(app, "Cell edit history cleared after world topology change")
+  end
+
   log_panel.info(
     app,
     string.format(
@@ -1421,6 +1748,10 @@ function sdf_scene.delete_active_cell(app)
         result.cell_name,
         result.scene_path,
         tostring(result.scene_delete_error)))
+  end
+
+  if sdf_history.clear(state.history) then
+    log_panel.info(app, "Cell edit history cleared after world topology change")
   end
 
   return true, result.cell_name
@@ -1481,20 +1812,7 @@ function sdf_scene.update_selected_box(app, box_data)
     return false, "World state is not initialized"
   end
 
-  local ok, result = update_selected_box(app, state, box_data)
-  if not ok then
-    log_panel.error(app, string.format("Update box failed: %s", result))
-    return false, result
-  end
-
-  reset_inspector_to_selected_box(state)
-
-  if not result.no_changes then
-    local log_prefix = result.half_size_was_clamped and "Updated box (half-size clamped)" or "Updated box"
-    log_selected_box_state(app, state, log_prefix)
-  end
-
-  return true, result
+  return commit_selected_box_from_inspector(app, state, box_data, true, false)
 end
 
 function sdf_scene.add_box(app)
@@ -1527,6 +1845,52 @@ function sdf_scene.duplicate_selected_box(app)
 
   log_selected_box_state(app, state, "Duplicated box")
   return true, result
+end
+
+function sdf_scene.undo_last_edit(app)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local did_undo, entry = sdf_history.undo(state.history)
+  if not did_undo then
+    log_panel.warn(app, "No cell edit to undo")
+    return false, "No cell edit to undo"
+  end
+
+  local restored, restore_error = restore_history_entry(app, state, entry, false)
+  if not restored then
+    sdf_history.redo(state.history)
+    log_panel.error(app, string.format("Undo failed: %s", restore_error))
+    return false, restore_error
+  end
+
+  log_panel.info(app, string.format("Undo: %s", entry.description))
+  return true, entry
+end
+
+function sdf_scene.redo_last_edit(app)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local did_redo, entry = sdf_history.redo(state.history)
+  if not did_redo then
+    log_panel.warn(app, "No cell edit to redo")
+    return false, "No cell edit to redo"
+  end
+
+  local restored, restore_error = restore_history_entry(app, state, entry, true)
+  if not restored then
+    sdf_history.undo(state.history)
+    log_panel.error(app, string.format("Redo failed: %s", restore_error))
+    return false, restore_error
+  end
+
+  log_panel.info(app, string.format("Redo: %s", entry.description))
+  return true, entry
 end
 
 function sdf_scene.nudge_selected_box_translation(app, axis_name, direction)
@@ -1643,7 +2007,16 @@ function sdf_scene.update(app, frame)
       end
 
       local selected_box = get_selected_box(state)
+      if hg.ImGuiButton("Undo") then
+        sdf_scene.undo_last_edit(app)
+      end
+      hg.ImGuiSameLine()
+      if hg.ImGuiButton("Redo") then
+        sdf_scene.redo_last_edit(app)
+      end
+
       if active_cell ~= nil and active_cell.scene_file ~= nil then
+        hg.ImGuiSameLine()
         if hg.ImGuiButton("Add Box") then
           sdf_scene.add_box(app)
         end
@@ -1658,10 +2031,12 @@ function sdf_scene.update(app, frame)
 
       if selected_box ~= nil then
         local inspector = sync_inspector_with_selected_box(state)
+        local selected_box_index = get_selected_box_index(state)
         hg.ImGuiSeparator()
 
         local _name_changed
         _name_changed, inspector.name = hg.ImGuiInputText("Name", inspector.name, box_name_input_max_size)
+        local name_input_active = hg.ImGuiIsItemActive()
         local _op_changed
         _op_changed, inspector.op_index = hg.ImGuiCombo("Op", inspector.op_index, box_op_items)
         local _translation_changed
@@ -1701,10 +2076,35 @@ function sdf_scene.update(app, frame)
         local _half_size_changed
         _half_size_changed, inspector.half_size = hg.ImGuiInputVec3("Half-Size", inspector.half_size, 2)
 
-        if hg.ImGuiButton("Apply Box") then
-          sdf_scene.update_selected_box(app, inspector)
+        local name_is_valid, name_error = validate_box_name_update(active_cell, selected_box_index, inspector.name)
+        local should_apply_inspector = false
+        local revert_on_apply_error = false
+
+        if _name_changed and name_is_valid then
+          should_apply_inspector = true
         end
-        hg.ImGuiSameLine()
+
+        if _op_changed or _translation_changed or _half_size_changed then
+          if name_is_valid then
+            should_apply_inspector = true
+            revert_on_apply_error = not name_input_active
+          elseif not name_input_active then
+            log_panel.error(app, string.format("Update box failed: %s", name_error))
+            reset_inspector_to_selected_box(state)
+            inspector = state.inspector
+          end
+        end
+
+        if not name_input_active and state.inspector_ui.name_input_was_active and not name_is_valid then
+          log_panel.error(app, string.format("Update box failed: %s", name_error))
+          reset_inspector_to_selected_box(state)
+          inspector = state.inspector
+        elseif should_apply_inspector then
+          commit_selected_box_from_inspector(app, state, inspector, true, revert_on_apply_error)
+        end
+
+        state.inspector_ui.name_input_was_active = name_input_active
+
         if hg.ImGuiButton("Revert Box") then
           reset_inspector_to_selected_box(state)
         end
