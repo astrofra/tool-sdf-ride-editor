@@ -34,12 +34,21 @@ local function make_default_shader_color(app, r, g, b)
     1.0)
 end
 
+local function create_locked_default_material(app, diffuse_color, specular_color, self_color)
+  local material = hg.CreateMaterial(app.render.shader_ref)
+  hg.SetMaterialValue(material, "uDiffuseColor", diffuse_color)
+  hg.SetMaterialValue(material, "uSpecularColor", specular_color)
+  hg.SetMaterialValue(material, "uSelfColor", self_color)
+  return material
+end
+
 local function create_material(app, r, g, b)
   local shader_color = make_default_shader_color(app, r, g, b)
-  return hg.CreateMaterial(
-    app.render.shader_ref,
-    "uDiffuseColor", shader_color,
-    "uSpecularColor", shader_color)
+  return create_locked_default_material(
+    app,
+    shader_color,
+    shader_color,
+    hg.Vec4(0.0, 0.0, 0.0, 1.0))
 end
 
 local function set_line_transform(transform, position, yaw, length, thickness)
