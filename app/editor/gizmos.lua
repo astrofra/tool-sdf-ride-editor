@@ -16,10 +16,18 @@ local translation_axis_active_thickness = 0.18
 local translation_axis_length_factor = 0.14
 local translation_axis_min_length = 4.0
 local translation_axis_max_length = 18.0
+local translation_axis_tip_length_factor = 0.16
+local translation_axis_tip_length_min = 0.75
+local translation_axis_tip_length_max = 2.4
+local translation_axis_tip_width_factor = 0.12
+local translation_axis_tip_width_min = 0.7
+local translation_axis_tip_width_max = 1.8
 local translation_axis_pick_threshold_pixels = 14.0
 local translation_plane_size_factor = 0.24
 local translation_plane_offset_factor = 0.14
 local translation_plane_thickness = 0.09
+local translation_gizmo_brightness_factor = 1.05
+local translation_gizmo_saturation_factor = 1.25
 local translation_xray_alpha = 0.5
 local translation_xray_darken_factor = 0.42
 
@@ -39,7 +47,7 @@ local translation_axis_definitions = {
   {
     name = "z",
     direction = hg.Vec3(0.0, 0.0, 1.0),
-    rotation = hg.Vec3(0.0, hg.Deg(90), 0.0),
+    rotation = hg.Vec3(0.0, hg.Deg(-90), 0.0),
     base_rgb = {84, 128, 196}
   }
 }
@@ -114,12 +122,37 @@ local function make_default_shader_color(app, rgb, alpha)
     alpha or 1.0)
 end
 
-local function darken_rgb(rgb, factor)
+local function clamp_color_byte(value)
+  return math.max(0, math.min(math.floor(value + 0.5), 255))
+end
+
+local function scale_rgb(rgb, factor)
   return {
-    math.floor(rgb[1] * factor + 0.5),
-    math.floor(rgb[2] * factor + 0.5),
-    math.floor(rgb[3] * factor + 0.5)
+    clamp_color_byte(rgb[1] * factor),
+    clamp_color_byte(rgb[2] * factor),
+    clamp_color_byte(rgb[3] * factor)
   }
+end
+
+local function darken_rgb(rgb, factor)
+  return scale_rgb(rgb, factor)
+end
+
+local function brighten_rgb(rgb, factor)
+  return scale_rgb(rgb, factor)
+end
+
+local function saturate_rgb(rgb, factor)
+  local luminance = rgb[1] * 0.2126 + rgb[2] * 0.7152 + rgb[3] * 0.0722
+  return {
+    clamp_color_byte(luminance + (rgb[1] - luminance) * factor),
+    clamp_color_byte(luminance + (rgb[2] - luminance) * factor),
+    clamp_color_byte(luminance + (rgb[3] - luminance) * factor)
+  }
+end
+
+local function tune_gizmo_rgb(rgb)
+  return brighten_rgb(saturate_rgb(rgb, translation_gizmo_saturation_factor), translation_gizmo_brightness_factor)
 end
 
 local function create_locked_default_material(app, diffuse_color, specular_color, self_color, options)
@@ -159,6 +192,19 @@ local function create_material(app, rgb, options)
   return create_locked_default_material(app, diffuse_color, specular_color, self_color, options)
 end
 
+local function create_gizmo_material(app, rgb, options)
+  options = options or {}
+  return create_material(app, rgb, {
+    alpha = options.alpha,
+    blend_mode = options.blend_mode,
+    depth_test = options.depth_test,
+    write_z = options.write_z,
+    face_culling = options.face_culling,
+    specular_rgb = options.specular_rgb or rgb,
+    self_rgb = options.self_rgb or rgb
+  })
+end
+
 local function copy_vec3(vec3)
   return hg.Vec3(vec3.x, vec3.y, vec3.z)
 end
@@ -182,6 +228,95 @@ local function set_nodes_enabled(nodes, is_enabled)
       nodes[index]:Disable()
     end
   end
+end
+
+local function set_optional_node_enabled(node, is_enabled)
+  if node == nil then
+    return
+  end
+
+  if is_enabled then
+    node:Enable()
+  else
+    node:Disable()
+  end
+end
+
+local function add_model_builder_vertex(model_builder, position, normal, u, v)
+  local vertex = hg.Vertex()
+  vertex.pos = position
+  vertex.normal = normal
+  vertex.uv0 = hg.Vec2(u, v)
+
+  return model_builder:AddVertex(vertex)
+end
+
+local function add_model_triangle(model_builder, p0, p1, p2, uv0, uv1, uv2)
+  local normal = hg.Normalize(hg.Cross(p1 - p0, p2 - p0))
+  local a = add_model_builder_vertex(model_builder, p0, normal, uv0[1], uv0[2])
+  local b = add_model_builder_vertex(model_builder, p1, normal, uv1[1], uv1[2])
+  local c = add_model_builder_vertex(model_builder, p2, normal, uv2[1], uv2[2])
+  model_builder:AddTriangle(a, b, c)
+end
+
+local function add_model_quad(model_builder, p0, p1, p2, p3)
+  local normal = hg.Normalize(hg.Cross(p1 - p0, p2 - p0))
+  local a = add_model_builder_vertex(model_builder, p0, normal, 0.0, 0.0)
+  local b = add_model_builder_vertex(model_builder, p1, normal, 0.0, 1.0)
+  local c = add_model_builder_vertex(model_builder, p2, normal, 1.0, 1.0)
+  local d = add_model_builder_vertex(model_builder, p3, normal, 1.0, 0.0)
+  model_builder:AddTriangle(a, b, c)
+  model_builder:AddTriangle(a, c, d)
+end
+
+local function create_translation_axis_tip_model()
+  local model_builder = hg.ModelBuilder()
+  local apex = hg.Vec3(0.5, 0.0, 0.0)
+  local base_bottom_back = hg.Vec3(-0.5, -0.5, -0.5)
+  local base_top_back = hg.Vec3(-0.5, 0.5, -0.5)
+  local base_top_front = hg.Vec3(-0.5, 0.5, 0.5)
+  local base_bottom_front = hg.Vec3(-0.5, -0.5, 0.5)
+
+  add_model_triangle(
+    model_builder,
+    base_bottom_back,
+    base_top_back,
+    apex,
+    {0.0, 0.0},
+    {0.0, 1.0},
+    {1.0, 0.5})
+  add_model_triangle(
+    model_builder,
+    base_top_back,
+    base_top_front,
+    apex,
+    {0.0, 0.0},
+    {0.0, 1.0},
+    {1.0, 0.5})
+  add_model_triangle(
+    model_builder,
+    base_top_front,
+    base_bottom_front,
+    apex,
+    {0.0, 0.0},
+    {0.0, 1.0},
+    {1.0, 0.5})
+  add_model_triangle(
+    model_builder,
+    base_bottom_front,
+    base_bottom_back,
+    apex,
+    {0.0, 0.0},
+    {0.0, 1.0},
+    {1.0, 0.5})
+  add_model_quad(
+    model_builder,
+    base_bottom_back,
+    base_bottom_front,
+    base_top_front,
+    base_top_back)
+
+  return model_builder:MakeModel(hg.VertexLayoutPosFloatNormUInt8())
 end
 
 local function create_grid_nodes(scene, line_ref, grid_material, x_axis_material, z_axis_material)
@@ -211,12 +346,16 @@ local function create_square_outline_nodes(scene, line_ref, material)
   return nodes
 end
 
-local function create_handle_node_bundle(scene, line_ref, materials)
+local function create_handle_node_bundle(scene, line_ref, materials, tip_ref)
   local bundle = {
     base = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {materials.base}),
     active = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {materials.active}),
     xray_base = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {materials.xray_base}),
     xray_active = hg.CreateObject(scene, hg.Mat4.Identity, line_ref, {materials.xray_active}),
+    base_tip = tip_ref ~= nil and hg.CreateObject(scene, hg.Mat4.Identity, tip_ref, {materials.base}) or nil,
+    active_tip = tip_ref ~= nil and hg.CreateObject(scene, hg.Mat4.Identity, tip_ref, {materials.active}) or nil,
+    xray_base_tip = tip_ref ~= nil and hg.CreateObject(scene, hg.Mat4.Identity, tip_ref, {materials.xray_base}) or nil,
+    xray_active_tip = tip_ref ~= nil and hg.CreateObject(scene, hg.Mat4.Identity, tip_ref, {materials.xray_active}) or nil,
     materials = materials
   }
 
@@ -224,6 +363,10 @@ local function create_handle_node_bundle(scene, line_ref, materials)
   bundle.active:Disable()
   bundle.xray_base:Disable()
   bundle.xray_active:Disable()
+  set_optional_node_enabled(bundle.base_tip, false)
+  set_optional_node_enabled(bundle.active_tip, false)
+  set_optional_node_enabled(bundle.xray_base_tip, false)
+  set_optional_node_enabled(bundle.xray_active_tip, false)
 
   return bundle
 end
@@ -234,28 +377,42 @@ local function set_handle_node_bundle_visibility(bundle, is_visible, is_highligh
     bundle.active:Disable()
     bundle.xray_base:Disable()
     bundle.xray_active:Disable()
+    set_optional_node_enabled(bundle.base_tip, false)
+    set_optional_node_enabled(bundle.active_tip, false)
+    set_optional_node_enabled(bundle.xray_base_tip, false)
+    set_optional_node_enabled(bundle.xray_active_tip, false)
     return
   end
 
   if is_highlighted then
     bundle.base:Disable()
     bundle.active:Enable()
+    set_optional_node_enabled(bundle.base_tip, false)
+    set_optional_node_enabled(bundle.active_tip, true)
   else
     bundle.base:Enable()
     bundle.active:Disable()
+    set_optional_node_enabled(bundle.base_tip, true)
+    set_optional_node_enabled(bundle.active_tip, false)
   end
 
   if xray_enabled then
     if is_highlighted then
       bundle.xray_base:Disable()
       bundle.xray_active:Enable()
+      set_optional_node_enabled(bundle.xray_base_tip, false)
+      set_optional_node_enabled(bundle.xray_active_tip, true)
     else
       bundle.xray_base:Enable()
       bundle.xray_active:Disable()
+      set_optional_node_enabled(bundle.xray_base_tip, true)
+      set_optional_node_enabled(bundle.xray_active_tip, false)
     end
   else
     bundle.xray_base:Disable()
     bundle.xray_active:Disable()
+    set_optional_node_enabled(bundle.xray_base_tip, false)
+    set_optional_node_enabled(bundle.xray_active_tip, false)
   end
 end
 
@@ -345,6 +502,19 @@ local function compute_translation_axis_length(frame, pivot)
   return hg.Clamp(distance * translation_axis_length_factor, translation_axis_min_length, translation_axis_max_length)
 end
 
+local function compute_translation_axis_tip_metrics(axis_length)
+  local tip_length = hg.Clamp(
+    axis_length * translation_axis_tip_length_factor,
+    translation_axis_tip_length_min,
+    translation_axis_tip_length_max)
+  local tip_width = hg.Clamp(
+    axis_length * translation_axis_tip_width_factor,
+    translation_axis_tip_width_min,
+    translation_axis_tip_width_max)
+
+  return tip_length, tip_width
+end
+
 local function compute_translation_plane_metrics(axis_length)
   local plane_size = axis_length * translation_plane_size_factor
   local plane_offset = axis_length * translation_plane_offset_factor
@@ -395,7 +565,8 @@ local function pick_translation_axis(frame, pivot, axis_length, mouse_x, mouse_y
 
   for index = 1, #translation_axis_definitions do
     local axis_definition = translation_axis_definitions[index]
-    local axis_end = pivot + axis_definition.direction * axis_length
+    local axis_tip_length = compute_translation_axis_tip_metrics(axis_length)
+    local axis_end = pivot + axis_definition.direction * (axis_length + axis_tip_length)
     local axis_end_ok
     local axis_end_screen
     axis_end_ok, axis_end_screen = project_world_to_screen(frame, axis_end)
@@ -698,13 +869,25 @@ end
 
 local function update_axis_handle_nodes(bundle, pivot, axis_definition, axis_length)
   local axis_position = pivot + axis_definition.direction * (axis_length * 0.5)
+  local axis_tip_length
+  local axis_tip_width
+  axis_tip_length, axis_tip_width = compute_translation_axis_tip_metrics(axis_length)
+  local axis_tip_position = pivot + axis_definition.direction * (axis_length + axis_tip_length * 0.5)
   local base_scale = hg.Vec3(axis_length, translation_axis_base_thickness, translation_axis_base_thickness)
   local active_scale = hg.Vec3(axis_length, translation_axis_active_thickness, translation_axis_active_thickness)
+  local base_tip_scale = hg.Vec3(axis_tip_length, axis_tip_width, axis_tip_width)
+  local active_tip_scale = hg.Vec3(axis_tip_length, axis_tip_width * 1.18, axis_tip_width * 1.18)
 
   set_box_transform(bundle.base:GetTransform(), axis_position, axis_definition.rotation, base_scale)
   set_box_transform(bundle.active:GetTransform(), axis_position, axis_definition.rotation, active_scale)
   set_box_transform(bundle.xray_base:GetTransform(), axis_position, axis_definition.rotation, base_scale)
   set_box_transform(bundle.xray_active:GetTransform(), axis_position, axis_definition.rotation, active_scale)
+  if bundle.base_tip ~= nil then
+    set_box_transform(bundle.base_tip:GetTransform(), axis_tip_position, axis_definition.rotation, base_tip_scale)
+    set_box_transform(bundle.active_tip:GetTransform(), axis_tip_position, axis_definition.rotation, active_tip_scale)
+    set_box_transform(bundle.xray_base_tip:GetTransform(), axis_tip_position, axis_definition.rotation, base_tip_scale)
+    set_box_transform(bundle.xray_active_tip:GetTransform(), axis_tip_position, axis_definition.rotation, active_tip_scale)
+  end
 end
 
 local function update_plane_handle_nodes(bundle, pivot, plane_definition, axis_length)
@@ -723,11 +906,12 @@ end
 function gizmos.attach(app)
   local scene = app.scene.handle
   local line_ref = app.render.line_ref
+  local axis_tip_ref = app.render.resources:AddModel("editor_translation_axis_tip", create_translation_axis_tip_model())
   local grid_material = create_material(app, {92, 98, 108})
   local x_axis_material = create_material(app, {176, 72, 72})
   local z_axis_material = create_material(app, {72, 120, 176})
   local placement_cursor_material = create_material(app, {212, 56, 56})
-  local translation_active_rgb = {244, 212, 122}
+  local translation_active_rgb = tune_gizmo_rgb({244, 212, 122})
   local translation_active_xray_rgb = darken_rgb(translation_active_rgb, translation_xray_darken_factor)
   local grid_x_nodes
   local grid_z_nodes
@@ -742,42 +926,44 @@ function gizmos.attach(app)
   local axis_nodes = {}
   for index = 1, #translation_axis_definitions do
     local axis_definition = translation_axis_definitions[index]
+    local base_rgb = tune_gizmo_rgb(axis_definition.base_rgb)
     axis_nodes[axis_definition.name] = create_handle_node_bundle(scene, line_ref, {
-      base = create_material(app, axis_definition.base_rgb),
-      active = create_material(app, translation_active_rgb),
-      xray_base = create_material(app, darken_rgb(axis_definition.base_rgb, translation_xray_darken_factor), {
+      base = create_gizmo_material(app, base_rgb),
+      active = create_gizmo_material(app, translation_active_rgb),
+      xray_base = create_gizmo_material(app, darken_rgb(base_rgb, translation_xray_darken_factor), {
         alpha = translation_xray_alpha,
         blend_mode = hg.BM_Alpha,
         depth_test = hg.DT_Greater,
         write_z = false
       }),
-      xray_active = create_material(app, translation_active_xray_rgb, {
+      xray_active = create_gizmo_material(app, translation_active_xray_rgb, {
         alpha = translation_xray_alpha,
         blend_mode = hg.BM_Alpha,
         depth_test = hg.DT_Greater,
         write_z = false
       })
-    })
+    }, axis_tip_ref)
   end
 
   local plane_nodes = {}
   for index = 1, #translation_plane_definitions do
     local plane_definition = translation_plane_definitions[index]
+    local base_rgb = tune_gizmo_rgb(plane_definition.base_rgb)
     plane_nodes[plane_definition.name] = create_handle_node_bundle(scene, line_ref, {
-      base = create_material(app, plane_definition.base_rgb, {
+      base = create_gizmo_material(app, base_rgb, {
         face_culling = hg.FC_Disabled
       }),
-      active = create_material(app, translation_active_rgb, {
+      active = create_gizmo_material(app, translation_active_rgb, {
         face_culling = hg.FC_Disabled
       }),
-      xray_base = create_material(app, darken_rgb(plane_definition.base_rgb, translation_xray_darken_factor), {
+      xray_base = create_gizmo_material(app, darken_rgb(base_rgb, translation_xray_darken_factor), {
         alpha = translation_xray_alpha,
         blend_mode = hg.BM_Alpha,
         depth_test = hg.DT_Greater,
         write_z = false,
         face_culling = hg.FC_Disabled
       }),
-      xray_active = create_material(app, translation_active_xray_rgb, {
+      xray_active = create_gizmo_material(app, translation_active_xray_rgb, {
         alpha = translation_xray_alpha,
         blend_mode = hg.BM_Alpha,
         depth_test = hg.DT_Greater,

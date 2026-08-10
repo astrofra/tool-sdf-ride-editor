@@ -11,6 +11,11 @@ local ok, err = xpcall(function()
   local axis_bundle = translation_state.axis_nodes.x
   local plane_bundle = translation_state.plane_nodes.xy
 
+  assert(axis_bundle.base_tip ~= nil, "expected axis bundle base tip node")
+  assert(axis_bundle.active_tip ~= nil, "expected axis bundle active tip node")
+  assert(axis_bundle.xray_base_tip ~= nil, "expected axis bundle xray base tip node")
+  assert(axis_bundle.xray_active_tip ~= nil, "expected axis bundle xray active tip node")
+
   assert(hg.GetMaterialBlendMode(axis_bundle.materials.xray_base) == hg.BM_Alpha, "expected axis X-ray base blend mode alpha")
   assert(hg.GetMaterialDepthTest(axis_bundle.materials.xray_base) == hg.DT_Greater, "expected axis X-ray base depth test greater")
   assert(hg.GetMaterialWriteZ(axis_bundle.materials.xray_base) == false, "expected axis X-ray base write z disabled")

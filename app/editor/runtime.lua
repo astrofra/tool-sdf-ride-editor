@@ -11,6 +11,8 @@ local window_defaults = {
 
 local background_clear = {24, 28, 34}
 local imgui_view_id = 255
+local shadow_map_resolution = 4096
+local spot_16bit_shadow_map = false
 local follow_spotlight_height = 200.0
 local follow_spotlight_radius = 450.0
 local follow_spotlight_inner_angle = hg.Deg(30)
@@ -75,7 +77,7 @@ function runtime.create()
     hg.LoadProgramFromAssets("core/shader/imgui"),
     hg.LoadProgramFromAssets("core/shader/imgui_image"))
 
-  local pipeline = hg.CreateForwardPipeline()
+  local pipeline = hg.CreateForwardPipeline(shadow_map_resolution, spot_16bit_shadow_map)
   local resources = hg.PipelineResources()
   local shader_ref = hg.LoadPipelineProgramRefFromAssets(
     "core/shader/default.hps",
