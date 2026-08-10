@@ -21,6 +21,8 @@ local wireframe_line_thickness = 0.08
 local box_name_input_max_size = 96
 local box_half_size_min = 0.01
 local box_value_epsilon = 0.0001
+local box_translation_step_min = 0.01
+local default_box_translation_step = 1.0
 local box_op_items = {"Add", "Subtract"}
 local default_new_box_name = "box"
 local duplicate_box_name_suffix = "_copy"
@@ -344,6 +346,51 @@ local function vec3_approx_equal(lhs, rhs)
     math.abs(lhs.z - rhs.z) < box_value_epsilon
 end
 
+local function normalize_positive_step(step, minimum_step, fallback_step)
+  local numeric_step = tonumber(step)
+  if numeric_step == nil then
+    return fallback_step
+  end
+
+  numeric_step = math.abs(numeric_step)
+  if numeric_step < minimum_step then
+    return minimum_step
+  end
+
+  return numeric_step
+end
+
+local function get_box_translation_step(state)
+  state.box_translation_step = normalize_positive_step(
+    state.box_translation_step,
+    box_translation_step_min,
+    default_box_translation_step)
+  return state.box_translation_step
+end
+
+local function snap_translation_vec3_to_step(translation, step)
+  return hg.Vec3(
+    snap_to_nearest_step(translation.x, step),
+    snap_to_nearest_step(translation.y, step),
+    snap_to_nearest_step(translation.z, step))
+end
+
+local function offset_translation_vec3_along_axis(translation, axis_name, delta)
+  local offset_translation = copy_vec3(translation)
+
+  if axis_name == "x" then
+    offset_translation.x = offset_translation.x + delta
+  elseif axis_name == "y" then
+    offset_translation.y = offset_translation.y + delta
+  elseif axis_name == "z" then
+    offset_translation.z = offset_translation.z + delta
+  else
+    return nil
+  end
+
+  return offset_translation
+end
+
 local function sync_inspector_with_selected_box(state)
   local selected_box
   local selected_box_index
@@ -376,6 +423,15 @@ local function reset_inspector_to_selected_box(state)
   state.inspector.bound_cell_name = nil
   state.inspector.bound_box_index = nil
   return sync_inspector_with_selected_box(state)
+end
+
+local function get_selected_box_inspector(state)
+  local inspector = sync_inspector_with_selected_box(state)
+  if inspector == nil then
+    return nil, "No box is selected"
+  end
+
+  return inspector
 end
 
 local function normalize_box_update_input(box_data, fallback_box)
@@ -909,6 +965,7 @@ local function make_world_state(path)
       translation = hg.Vec3(0.0, 0.0, 0.0),
       half_size = hg.Vec3(1.0, 1.0, 1.0)
     },
+    box_translation_step = default_box_translation_step,
     delete_cell_confirmation_armed = false,
     materials = {}
   }
@@ -1472,6 +1529,47 @@ function sdf_scene.duplicate_selected_box(app)
   return true, result
 end
 
+function sdf_scene.nudge_selected_box_translation(app, axis_name, direction)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local inspector, inspector_error = get_selected_box_inspector(state)
+  if inspector == nil then
+    log_panel.error(app, string.format("Move box failed: %s", inspector_error))
+    return false, inspector_error
+  end
+
+  local step = get_box_translation_step(state)
+  local signed_delta = step * direction
+  local nudged_translation = offset_translation_vec3_along_axis(inspector.translation, axis_name, signed_delta)
+  if nudged_translation == nil then
+    local error_message = string.format("Unsupported translation axis %s", tostring(axis_name))
+    log_panel.error(app, string.format("Move box failed: %s", error_message))
+    return false, error_message
+  end
+
+  inspector.translation = nudged_translation
+  return sdf_scene.update_selected_box(app, inspector)
+end
+
+function sdf_scene.snap_selected_box_translation(app)
+  local state = app.sdf_world or app.sdf
+  if state == nil or state.world_document == nil then
+    return false, "World state is not initialized"
+  end
+
+  local inspector, inspector_error = get_selected_box_inspector(state)
+  if inspector == nil then
+    log_panel.error(app, string.format("Snap translation failed: %s", inspector_error))
+    return false, inspector_error
+  end
+
+  inspector.translation = snap_translation_vec3_to_step(inspector.translation, get_box_translation_step(state))
+  return sdf_scene.update_selected_box(app, inspector)
+end
+
 function sdf_scene.handle_cell_placement_confirmation(app, frame)
   local state = app.sdf_world or app.sdf
   if state == nil then
@@ -1568,6 +1666,38 @@ function sdf_scene.update(app, frame)
         _op_changed, inspector.op_index = hg.ImGuiCombo("Op", inspector.op_index, box_op_items)
         local _translation_changed
         _translation_changed, inspector.translation = hg.ImGuiInputVec3("Local T", inspector.translation, 2)
+        local _translation_step_changed
+        _translation_step_changed, state.box_translation_step = hg.ImGuiInputFloat("Move Step", state.box_translation_step, 0.1, 1.0, 2)
+        state.box_translation_step = get_box_translation_step(state)
+
+        if hg.ImGuiButton("-X") then
+          sdf_scene.nudge_selected_box_translation(app, "x", -1.0)
+        end
+        hg.ImGuiSameLine()
+        if hg.ImGuiButton("+X") then
+          sdf_scene.nudge_selected_box_translation(app, "x", 1.0)
+        end
+        hg.ImGuiSameLine()
+        if hg.ImGuiButton("-Y") then
+          sdf_scene.nudge_selected_box_translation(app, "y", -1.0)
+        end
+        hg.ImGuiSameLine()
+        if hg.ImGuiButton("+Y") then
+          sdf_scene.nudge_selected_box_translation(app, "y", 1.0)
+        end
+        hg.ImGuiSameLine()
+        if hg.ImGuiButton("-Z") then
+          sdf_scene.nudge_selected_box_translation(app, "z", -1.0)
+        end
+        hg.ImGuiSameLine()
+        if hg.ImGuiButton("+Z") then
+          sdf_scene.nudge_selected_box_translation(app, "z", 1.0)
+        end
+        hg.ImGuiSameLine()
+        if hg.ImGuiButton("Snap T") then
+          sdf_scene.snap_selected_box_translation(app)
+        end
+
         local _half_size_changed
         _half_size_changed, inspector.half_size = hg.ImGuiInputVec3("Half-Size", inspector.half_size, 2)
 
