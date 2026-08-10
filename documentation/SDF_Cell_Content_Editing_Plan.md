@@ -232,6 +232,12 @@ Recommended snap policy:
 - keep the snap step explicit and shared;
 - do not mix cell-grid placement logic with local box snap logic.
 
+Current implementation note:
+
+- the first gizmo slice is an axis-only translation gizmo;
+- it commits through the same auto-save / undo merge path as inspector edits;
+- plane handles and resize gizmos remain future work.
+
 This is the point where a gizmo can become useful, but it should not be a prerequisite for the first stable edit loop.
 
 ### Phase 7. Local resize workflow

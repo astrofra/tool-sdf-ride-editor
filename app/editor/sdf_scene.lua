@@ -1,5 +1,6 @@
 local hg = require("harfang")
 local sdf = require("sdf-generator")
+local gizmos = require("editor.gizmos")
 local log_panel = require("editor.log_panel")
 local sdf_history = require("editor.sdf_history")
 local sdf_selection = require("editor.sdf_selection")
@@ -526,6 +527,9 @@ local function reset_inspector_to_selected_box(state)
 
   state.inspector.bound_cell_name = nil
   state.inspector.bound_box_index = nil
+  if state.inspector_ui ~= nil then
+    state.inspector_ui.name_input_was_active = false
+  end
   return sync_inspector_with_selected_box(state)
 end
 
@@ -599,11 +603,15 @@ local function validate_box_name_update(active_cell, selected_box_index, candida
   return true, nil
 end
 
-local function commit_selected_box_from_inspector(app, state, box_data, log_validation_error, revert_on_validation_error)
+local function commit_selected_box_from_inspector(app, state, box_data, log_validation_error, revert_on_validation_error, log_success, success_log_prefix)
   local selected_box
   local selected_box_index
   local active_cell
   selected_box, selected_box_index, active_cell = get_selected_box(state)
+
+  if log_success == nil then
+    log_success = true
+  end
 
   if selected_box == nil or selected_box_index == nil or active_cell == nil then
     if log_validation_error and app ~= nil then
@@ -649,8 +657,11 @@ local function commit_selected_box_from_inspector(app, state, box_data, log_vali
 
   reset_inspector_to_selected_box(state)
 
-  if not result.no_changes and app ~= nil then
-    local log_prefix = result.half_size_was_clamped and "Updated box (half-size clamped)" or "Updated box"
+  if log_success and not result.no_changes and app ~= nil then
+    local log_prefix = success_log_prefix
+    if log_prefix == nil then
+      log_prefix = result.half_size_was_clamped and "Updated box (half-size clamped)" or "Updated box"
+    end
     log_selected_box_state(app, state, log_prefix)
   end
 
@@ -1934,6 +1945,31 @@ function sdf_scene.snap_selected_box_translation(app)
   return sdf_scene.update_selected_box(app, inspector)
 end
 
+local function apply_selected_box_translation_from_gizmo(app, state, translation, log_success)
+  local selected_box
+  local _
+  local active_cell
+  selected_box, _, active_cell = get_selected_box(state)
+
+  if selected_box == nil or active_cell == nil then
+    return false, "No box is selected"
+  end
+
+  return commit_selected_box_from_inspector(
+    app,
+    state,
+    {
+      name = selected_box.name,
+      op = selected_box.op,
+      translation = copy_vec3(translation),
+      half_size = copy_vec3(selected_box.half_size)
+    },
+    true,
+    true,
+    log_success,
+    "Moved box")
+end
+
 function sdf_scene.handle_cell_placement_confirmation(app, frame)
   local state = app.sdf_world or app.sdf
   if state == nil then
@@ -2188,7 +2224,28 @@ function sdf_scene.update(app, frame)
   hg.ImGuiEnd()
 
   local placement_handled = handle_cell_placement_confirmation(app, state, frame)
+  local gizmo_handled = false
+
   if not placement_handled then
+    local gizmo_action
+    gizmo_handled, gizmo_action = gizmos.handle_interaction(app, frame)
+
+    if gizmo_action ~= nil and gizmo_action.kind == "gizmo_translate_selected_box" then
+      if gizmo_action.changed then
+        local apply_ok, apply_result = apply_selected_box_translation_from_gizmo(app, state, gizmo_action.translation, gizmo_action.finalize)
+        if not apply_ok then
+          gizmos.cancel_translation_drag(app)
+          if not gizmo_action.finalize then
+            log_panel.error(app, string.format("Gizmo translation failed: %s", tostring(apply_result)))
+          end
+        end
+      elseif gizmo_action.finalize and gizmo_action.had_translation_change then
+        log_selected_box_state(app, state, "Moved box")
+      end
+    end
+  end
+
+  if not placement_handled and not gizmo_handled then
     handle_box_selection(app, state, frame)
   end
 end
